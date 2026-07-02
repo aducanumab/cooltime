@@ -1,0 +1,15 @@
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# 앱에서 내보낸 백업 JSON (관리 > 내보내기)
+cooldown-backup-*.json
+
+# Node (추후 툴링 도입 시)
+node_modules/

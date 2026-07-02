@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <meta name="theme-color" content="#ff5a3c" />
+  <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="app-header">
+      <h1>🍢 쿨타임 트래커</h1>
+      <p class="subtitle">먹거나 한 걸 기록하고, 다시 해도 되는 날까지 카운트다운</p>
+    </header>
+
+    <nav class="tabbar" id="tabbar">
+      <button class="tab active" data-tab="record">📝 기록</button>
+      <button class="tab" data-tab="cooldown">⏳ 쿨타임</button>
+      <button class="tab" data-tab="manage">⚙️ 관리</button>
+    </nav>
+
+    <main class="content">
+      <!-- ===================== 기록 탭 ===================== -->
+      <section class="panel active" id="panel-record">
+        <form class="card form" id="record-form" autocomplete="off">
+          <h2 class="card-title">오늘 뭐 먹었어요?</h2>
+
+          <label class="field">
+            <span class="field-label">메뉴 / 항목</span>
+            <input type="text" id="f-name" list="menu-suggestions" placeholder="예: 떡볶이" required />
+            <datalist id="menu-suggestions"></datalist>
+          </label>
+
+          <div class="row">
+            <label class="field">
+              <span class="field-label">날짜</span>
+              <input type="date" id="f-date" required />
+            </label>
+            <label class="field">
+              <span class="field-label">쿨타임(일)</span>
+              <input type="number" id="f-cooldown" min="0" step="1" placeholder="기본값" />
+            </label>
+          </div>
+
+          <label class="field">
+            <span class="field-label">메모 / 부가설명</span>
+            <textarea id="f-note" rows="2" placeholder="자유 메모 — 또는 아래 'AI 분석'으로 칼로리·영양정보 자동 채우기"></textarea>
+          </label>
+
+          <div class="ai-box">
+            <button type="button" class="btn btn-ghost" id="btn-ai">🤖 AI로 영양정보 채우기</button>
+            <span class="ai-hint" id="ai-hint"></span>
+          </div>
+          <div class="nutrition" id="f-nutrition" hidden></div>
+
+          <div class="form-actions">
+            <button type="submit" class="btn btn-primary">기록 저장</button>
+            <button type="button" class="btn btn-soft" id="btn-photo" title="추후 지원 예정" disabled>📷 사진으로 기록 (준비중)</button>
+          </div>
+        </form>
+
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">최근 기록</h2>
+            <span class="muted" id="record-count"></span>
+          </div>
+          <ul class="record-list" id="recent-list"></ul>
+        </div>
+      </section>
+
+      <!-- ===================== 쿨타임 탭 ===================== -->
+      <section class="panel" id="panel-cooldown">
+        <div class="summary" id="summary"></div>
+        <div id="cooldown-groups"></div>
+      </section>
+
+      <!-- ===================== 관리 탭 ===================== -->
+      <section class="panel" id="panel-manage">
+        <div class="card">
+          <h2 class="card-title">메뉴 & 쿨타임</h2>
+          <p class="muted small">기록할 때 새 이름을 쓰면 자동으로 추가돼요. 여기서 항목별 쿨타임을 바꿀 수 있습니다.</p>
+          <ul class="menu-list" id="menu-list"></ul>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">설정</h2>
+          <label class="field">
+            <span class="field-label">기본 쿨타임(일)</span>
+            <input type="number" id="set-default-cooldown" min="0" step="1" />
+          </label>
+
+          <label class="field">
+            <span class="field-label">AI 공급자 (영양정보 분석)</span>
+            <select id="set-provider">
+              <option value="mock">데모 — 무료·로컬 (가짜 데이터)</option>
+              <option value="claude">Claude (Anthropic)</option>
+              <option value="openai">OpenAI (GPT)</option>
+              <option value="gemini">Google Gemini</option>
+            </select>
+          </label>
+
+          <div id="provider-config" hidden>
+            <div class="warn-box" id="provider-warn">
+              ⚠️ 실제 API 공급자를 선택했습니다. 'AI 분석' 버튼을 누를 때마다 본인 키로 <b>호출당 과금</b>이 발생합니다. (기록·쿨타임 기능은 무료)
+            </div>
+            <label class="field">
+              <span class="field-label">API 키</span>
+              <input type="password" id="set-key" placeholder="본인 API 키 입력 — 이 브라우저에만 저장됨" />
+            </label>
+            <label class="field">
+              <span class="field-label">모델명</span>
+              <input type="text" id="set-model" placeholder="모델 ID" />
+            </label>
+          </div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">데이터</h2>
+          <div class="form-actions">
+            <button type="button" class="btn btn-soft" id="btn-export">⬇️ 내보내기(JSON)</button>
+            <label class="btn btn-soft" for="import-file">⬆️ 가져오기</label>
+            <input type="file" id="import-file" accept="application/json" hidden />
+            <button type="button" class="btn btn-danger" id="btn-reset">🗑️ 전체 삭제</button>
+          </div>
+          <p class="muted small">모든 데이터는 이 브라우저(localStorage)에만 저장됩니다. 서버로 전송되지 않아요.</p>
+        </div>
+      </section>
+    </main>
+
+    <div class="toast" id="toast" hidden></div>
+  </div>
+
+  <script src="app.js" defer></script>
+</body>
+</html>
