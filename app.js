@@ -1,13 +1,30 @@
 'use strict';
 
 /* =========================================================================
- *  쿨타임 트래커 — 먹은 거 기록 & 쿨다운 카운트다운
- *  - 데이터: 브라우저 localStorage (서버 없음)
- *  - AI 영양분석: 공급자 무관 어댑터 구조 (기본 = 무료 데모 mock)
+ *  쿨타임 트래커 v2 — 계정(Supabase Auth) + 클라우드 DB(Postgres/RLS)
+ *  - 로그인 필수. 기록·메뉴는 본인 계정에만 저장(행 단위 보안).
+ *  - 비밀번호는 우리 DB에 없음 — Supabase Auth가 해시로 관리.
+ *  - AI 영양분석: 공급자 무관 어댑터 (기본 = 무료 데모 mock).
+ *    LLM 키/설정은 이 브라우저(localStorage)에만 저장, 서버 전송 없음.
  * ======================================================================= */
 
-/* ---------- 저장소 ---------- */
-const STORE = { menus: 'cooldown.menus', records: 'cooldown.records', settings: 'cooldown.settings' };
+/* ---------- Supabase 클라이언트 ---------- */
+const CFG = window.COOLTIME_CONFIG || {};
+const CONFIG_READY = !!(
+  CFG.SUPABASE_URL && CFG.SUPABASE_ANON_KEY &&
+  !/YOUR-PROJECT|YOUR-ANON-KEY/.test(CFG.SUPABASE_URL + CFG.SUPABASE_ANON_KEY)
+);
+const sb = CONFIG_READY ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY) : null;
+
+/* ---------- 로컬 저장 (기기 전용 항목만) ---------- */
+const LS = {
+  llm: 'cooldown.llm',                    // LLM 공급자/키/모델 — 기기 전용
+  lastSeen: 'cooldown.lastSeenAt',        // 인앱 '새로 완료' 판단 기준(기기별)
+  migrateDismissed: 'cooldown.migrateDismissed',
+  legacyMenus: 'cooldown.menus',          // v1(localStorage) 데이터 — 이관 대상
+  legacyRecords: 'cooldown.records',
+  legacySettings: 'cooldown.settings',
+};
 
 function loadJSON(key, fallback) {
   try { const v = JSON.parse(localStorage.getItem(key)); return v == null ? fallback : v; }
@@ -15,21 +32,33 @@ function loadJSON(key, fallback) {
 }
 function saveJSON(key, val) { localStorage.setItem(key, JSON.stringify(val)); }
 
-let menus = loadJSON(STORE.menus, []);
-let records = loadJSON(STORE.records, []);
-let settings = Object.assign({
-  defaultCooldownDays: 30,
-  llmProvider: 'mock',
-  keys: { claude: '', openai: '', gemini: '' },
-  models: { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash' },
-}, loadJSON(STORE.settings, {}));
+// LLM 설정 (v1 settings에서 1회 승계)
+let llm = loadJSON(LS.llm, null);
+if (!llm) {
+  const legacy = loadJSON(LS.legacySettings, {});
+  llm = {
+    provider: legacy.llmProvider || 'mock',
+    keys: Object.assign({ claude: '', openai: '', gemini: '' }, legacy.keys || {}),
+    models: Object.assign(
+      { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash' },
+      legacy.models || {}
+    ),
+  };
+  saveJSON(LS.llm, llm);
+}
+function saveLlm() { saveJSON(LS.llm, llm); }
 
-function persist() { saveJSON(STORE.menus, menus); saveJSON(STORE.records, records); saveJSON(STORE.settings, settings); }
+/* ---------- 앱 상태 (클라우드 캐시) ---------- */
+let currentUser = null;   // Supabase user
+let profile = null;       // profiles 행
+let menus = [];           // [{id, name, cooldownDays, createdAt}]
+let records = [];         // [{id, menuId, name, date, note, nutrition, createdAt}]
+let newlyReady = new Set(); // 이번 세션에 '새로 완료'된 menuId
+let loadedForUser = null;
 
 /* ---------- 유틸 ---------- */
 const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const norm = (s) => String(s).trim().toLowerCase();
 
 function pad2(n) { return String(n).padStart(2, '0'); }
@@ -51,25 +80,16 @@ function toast(msg) {
   el.textContent = msg;
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 2200);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 2600);
 }
+
+function defaultCooldown() { return profile ? profile.default_cooldown_days : 30; }
 
 /* ---------- 메뉴 헬퍼 ---------- */
 function findMenuByName(name) { return menus.find((m) => norm(m.name) === norm(name)); }
 function getMenu(id) { return menus.find((m) => m.id === id); }
 
-function ensureMenu(name, cooldownDays) {
-  let m = findMenuByName(name);
-  if (!m) {
-    m = { id: uid(), name: name.trim(), cooldownDays: cooldownDays ?? settings.defaultCooldownDays, createdAt: Date.now() };
-    menus.push(m);
-  } else if (cooldownDays != null && cooldownDays !== '') {
-    m.cooldownDays = cooldownDays;
-  }
-  return m;
-}
-
-/* ---------- 쿨타임 계산 ---------- */
+/* ---------- 쿨타임 계산 (v1과 동일) ---------- */
 function menuStatus(menu) {
   const recs = records.filter((r) => r.menuId === menu.id).sort((a, b) => (a.date < b.date ? 1 : -1));
   const last = recs[0];
@@ -90,13 +110,111 @@ function menuStatus(menu) {
 }
 
 /* =========================================================================
- *  AI 영양분석 — 공급자 무관 어댑터
- *  analyzeNutrition(name) 하나만 호출하면, 설정에서 고른 공급자가 처리.
- *  새 LLM을 붙이려면 PROVIDERS 에 어댑터 하나만 추가하면 됩니다.
- *  반환 형태(정규화):
- *    { calories, carbs, protein, fat, sodium, healthNote, suggestedCooldownDays }
+ *  store — 클라우드 데이터 계층 (Supabase CRUD + 메모리 캐시)
  * ======================================================================= */
+const mapMenu = (row) => ({ id: row.id, name: row.name, cooldownDays: row.cooldown_days, createdAt: row.created_at });
+function mapRecord(row) {
+  const m = getMenu(row.menu_id);
+  return {
+    id: row.id, menuId: row.menu_id,
+    name: m ? m.name : '(삭제된 메뉴)',
+    date: row.eaten_on, note: row.note || '',
+    nutrition: row.nutrition || null,
+    createdAt: Date.parse(row.created_at) || 0,
+  };
+}
 
+const store = {
+  async loadAll() {
+    const [mRes, rRes] = await Promise.all([
+      sb.from('menus').select('*').order('created_at'),
+      sb.from('records').select('*').order('eaten_on', { ascending: false }),
+    ]);
+    if (mRes.error) throw mRes.error;
+    if (rRes.error) throw rRes.error;
+
+    let pRes = await sb.from('profiles').select('*').single();
+    if (pRes.error && pRes.error.code === 'PGRST116') {
+      // 트리거 이전 가입 등 예외 대비: 프로필 없으면 생성
+      pRes = await sb.from('profiles').insert({ id: currentUser.id }).select().single();
+    }
+    if (pRes.error) throw pRes.error;
+
+    profile = pRes.data;
+    menus = mRes.data.map(mapMenu);
+    records = rRes.data.map(mapRecord);
+  },
+
+  async upsertMenu(name, cooldownDays) {
+    const existing = findMenuByName(name);
+    if (existing) {
+      if (cooldownDays != null && cooldownDays !== existing.cooldownDays) {
+        await this.updateMenuCooldown(existing.id, cooldownDays);
+      }
+      return existing;
+    }
+    const row = { name: name.trim(), cooldown_days: cooldownDays ?? defaultCooldown() };
+    let { data, error } = await sb.from('menus').insert(row).select().single();
+    if (error && error.code === '23505') {
+      // 동시성으로 이미 생성된 경우: 다시 조회
+      const all = await sb.from('menus').select('*');
+      if (all.error) throw all.error;
+      data = all.data.find((r) => norm(r.name) === norm(row.name));
+      error = data ? null : error;
+    }
+    if (error) throw error;
+    const m = mapMenu(data);
+    menus.push(m);
+    return m;
+  },
+
+  async updateMenuCooldown(id, days) {
+    const { error } = await sb.from('menus').update({ cooldown_days: days }).eq('id', id);
+    if (error) throw error;
+    const m = getMenu(id);
+    if (m) m.cooldownDays = days;
+  },
+
+  async deleteMenu(id) {
+    const { error } = await sb.from('menus').delete().eq('id', id); // records는 cascade
+    if (error) throw error;
+    menus = menus.filter((x) => x.id !== id);
+    records = records.filter((r) => r.menuId !== id);
+  },
+
+  async addRecord({ menuId, date, note, nutrition }) {
+    const { data, error } = await sb.from('records')
+      .insert({ menu_id: menuId, eaten_on: date, note: note || null, nutrition: nutrition || null })
+      .select().single();
+    if (error) throw error;
+    const rec = mapRecord(data);
+    records.push(rec);
+    return rec;
+  },
+
+  async deleteRecord(id) {
+    const { error } = await sb.from('records').delete().eq('id', id);
+    if (error) throw error;
+    records = records.filter((r) => r.id !== id);
+  },
+
+  async deleteAllData() {
+    const { error } = await sb.from('menus').delete().not('id', 'is', null); // 본인 것만(RLS)
+    if (error) throw error;
+    menus = []; records = [];
+  },
+
+  async updateProfile(patch) {
+    const { data, error } = await sb.from('profiles').update(patch).eq('id', currentUser.id).select().single();
+    if (error) throw error;
+    profile = data;
+  },
+};
+
+/* =========================================================================
+ *  AI 영양분석 — 공급자 무관 어댑터 (v1과 동일 구조, 설정만 llm.*)
+ *  반환: { calories, carbs, protein, fat, sodium, healthNote, suggestedCooldownDays }
+ * ======================================================================= */
 const NUTRITION_SYS =
   '너는 음식 영양 분석기다. 사용자가 준 음식의 1인분 기준 대략적 영양정보를 JSON으로만 답하라. ' +
   '키: calories(kcal, 숫자), carbs(g), protein(g), fat(g), sodium(mg), ' +
@@ -129,7 +247,7 @@ const PROVIDERS = {
     label: '데모(무료·로컬)',
     needsKey: false,
     async analyze(name) {
-      await sleep(450); // 비동기 느낌만
+      await sleep(450);
       return normalizeNutrition(mockNutrition(name));
     },
   },
@@ -143,12 +261,12 @@ const PROVIDERS = {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-api-key': settings.keys.claude,
+          'x-api-key': llm.keys.claude,
           'anthropic-version': '2023-06-01',
           'anthropic-dangerous-direct-browser-access': 'true',
         },
         body: JSON.stringify({
-          model: settings.models.claude,
+          model: llm.models.claude,
           max_tokens: 300,
           system: NUTRITION_SYS,
           messages: [{ role: 'user', content: nutritionUserMsg(name) }],
@@ -167,9 +285,9 @@ const PROVIDERS = {
     async analyze(name) {
       const res = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${settings.keys.openai}` },
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${llm.keys.openai}` },
         body: JSON.stringify({
-          model: settings.models.openai,
+          model: llm.models.openai,
           messages: [
             { role: 'system', content: NUTRITION_SYS },
             { role: 'user', content: nutritionUserMsg(name) },
@@ -188,7 +306,7 @@ const PROVIDERS = {
     label: 'Gemini',
     needsKey: true,
     async analyze(name) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${settings.models.gemini}:generateContent?key=${encodeURIComponent(settings.keys.gemini)}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${llm.models.gemini}:generateContent?key=${encodeURIComponent(llm.keys.gemini)}`;
       const res = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -202,8 +320,8 @@ const PROVIDERS = {
 };
 
 async function analyzeNutrition(name) {
-  const provider = PROVIDERS[settings.llmProvider] || PROVIDERS.mock;
-  if (provider.needsKey && !settings.keys[settings.llmProvider]) {
+  const provider = PROVIDERS[llm.provider] || PROVIDERS.mock;
+  if (provider.needsKey && !llm.keys[llm.provider]) {
     throw new Error(`${provider.label} API 키가 설정되지 않았습니다. (관리 > 설정)`);
   }
   return provider.analyze(name);
@@ -227,7 +345,6 @@ const MOCK_DB = {
 function mockNutrition(name) {
   const key = Object.keys(MOCK_DB).find((k) => norm(name).includes(norm(k)));
   if (key) return MOCK_DB[key];
-  // 일반 추정: 이름 길이로 살짝 변주만
   const seed = norm(name).length;
   return {
     calories: 350 + (seed % 5) * 60,
@@ -236,21 +353,294 @@ function mockNutrition(name) {
     fat: 12 + (seed % 4) * 5,
     sodium: 700 + (seed % 6) * 120,
     healthNote: '데모 추정치예요. 정확한 값은 AI 공급자를 연결하면 채워집니다.',
-    suggestedCooldownDays: settings.defaultCooldownDays,
+    suggestedCooldownDays: defaultCooldown(),
   };
 }
 
 /* =========================================================================
- *  렌더링
+ *  인증 — 화면 게이트 & 플로우
  * ======================================================================= */
-let lastNutrition = null; // 폼에서 채운 영양정보 임시 보관
+function setGate(loggedIn) {
+  $('#app-view').hidden = !loggedIn;
+  $('#auth-view').hidden = loggedIn;
+}
+function showAuthScreen(name) {
+  $$('#auth-view [data-auth-view]').forEach((el) => { el.hidden = el.dataset.authView !== name; });
+  $$('#auth-view .form-error').forEach((el) => { el.hidden = true; });
+}
+function showFormError(sel, msg) {
+  const el = $(sel);
+  el.textContent = msg;
+  el.hidden = false;
+}
+function showNotice(title, body) {
+  $('#notice-title').textContent = title;
+  $('#notice-body').textContent = body;
+  showAuthScreen('notice');
+}
+function authMsg(err) {
+  const m = (err && err.message) || '';
+  if (/invalid login credentials/i.test(m)) return '이메일 또는 비밀번호가 올바르지 않습니다.';
+  if (/email not confirmed/i.test(m)) return '이메일 인증이 아직 안 됐어요. 받은편지함(스팸함 포함)의 인증 링크를 눌러주세요.';
+  if (/already registered/i.test(m)) return '이미 가입된 이메일입니다.';
+  if (/rate limit|too many/i.test(m)) return '요청이 너무 잦아요. 잠시 후 다시 시도하세요. (무료 메일 발송 제한)';
+  if (/password.*(short|least|character)/i.test(m)) return '비밀번호가 너무 짧습니다. 8자 이상으로 해주세요.';
+  if (/failed to fetch|network/i.test(m)) return '네트워크 오류 — 인터넷 연결 또는 Supabase 프로젝트 상태(일시정지 여부)를 확인하세요.';
+  return m || '알 수 없는 오류가 발생했어요.';
+}
+
+async function enterApp(session) {
+  if (!session) return;
+  if (loadedForUser === session.user.id) { setGate(true); return; }
+  currentUser = session.user;
+  try {
+    await store.loadAll();
+  } catch (err) {
+    toast('데이터 로드 실패: ' + authMsg(err));
+    return;
+  }
+  loadedForUser = currentUser.id;
+  await maybeImportLegacy();
+  computeNewlyReady();
+  renderAll();
+  setGate(true);
+  notifyNewlyReady();
+}
+
+function leaveApp() {
+  currentUser = null; profile = null;
+  menus = []; records = [];
+  newlyReady = new Set();
+  loadedForUser = null;
+  setGate(false);
+  showAuthScreen('login');
+}
+
+function initAuth() {
+  if (!CONFIG_READY) {
+    setGate(false);
+    showAuthScreen('config');
+    return;
+  }
+  sb.auth.onAuthStateChange((event, session) => {
+    // supabase-js 콜백 안에서 곧바로 다른 supabase 호출 시 교착 가능 → 밖으로 미룸
+    setTimeout(() => {
+      if (event === 'PASSWORD_RECOVERY') { setGate(false); showAuthScreen('recovery'); return; }
+      if (session) enterApp(session);
+      else leaveApp();
+    }, 0);
+  });
+}
+
+function initAuthUI() {
+  // 화면 전환 링크
+  $('#auth-view').addEventListener('click', (e) => {
+    const goto = e.target.closest('[data-goto]')?.dataset.goto;
+    if (!goto) return;
+    e.preventDefault();
+    showAuthScreen(goto);
+  });
+
+  // 로그인
+  $('#login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!sb) return;
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    const { error } = await sb.auth.signInWithPassword({
+      email: $('#login-email').value.trim(),
+      password: $('#login-password').value,
+    });
+    btn.disabled = false;
+    if (error) showFormError('#login-error', authMsg(error));
+    // 성공 시 onAuthStateChange가 화면 전환
+  });
+
+  // 회원가입
+  $('#signup-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!sb) return;
+    const email = $('#signup-email').value.trim();
+    const pw = $('#signup-password').value;
+    const pw2 = $('#signup-password2').value;
+    if (pw.length < 8) return showFormError('#signup-error', '비밀번호는 8자 이상이어야 해요.');
+    if (pw !== pw2) return showFormError('#signup-error', '비밀번호 확인이 일치하지 않아요.');
+
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    const { data, error } = await sb.auth.signUp({ email, password: pw });
+    btn.disabled = false;
+    if (error) return showFormError('#signup-error', authMsg(error));
+
+    // 이미 가입된 이메일이면 identities가 빈 배열로 옴 (정보 노출 방지 정책)
+    if (data.user && Array.isArray(data.user.identities) && data.user.identities.length === 0) {
+      return showFormError('#signup-error', '이미 가입된 이메일입니다. 로그인하거나 비밀번호 찾기를 이용하세요.');
+    }
+    if (!data.session) {
+      showNotice('📮 인증 메일을 보냈어요',
+        `${email} 받은편지함(스팸함 포함)에서 인증 링크를 누르면 가입이 완료됩니다.`);
+    }
+    // 인증 꺼진 프로젝트면 session이 바로 생겨 onAuthStateChange가 처리
+  });
+
+  // 비밀번호 찾기
+  $('#forgot-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!sb) return;
+    const email = $('#forgot-email').value.trim();
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    const { error } = await sb.auth.resetPasswordForEmail(email, {
+      redirectTo: location.origin + location.pathname,
+    });
+    btn.disabled = false;
+    if (error) return showFormError('#forgot-error', authMsg(error));
+    showNotice('📮 재설정 메일을 보냈어요', `${email}의 링크를 누르면 새 비밀번호를 설정할 수 있어요.`);
+  });
+
+  // 새 비밀번호 설정 (재설정 링크 진입)
+  $('#recovery-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (!sb) return;
+    const pw = $('#recovery-password').value;
+    if (pw.length < 8) return showFormError('#recovery-error', '비밀번호는 8자 이상이어야 해요.');
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    const { error } = await sb.auth.updateUser({ password: pw });
+    btn.disabled = false;
+    if (error) return showFormError('#recovery-error', authMsg(error));
+    toast('비밀번호가 변경됐어요 ✅');
+    const { data: { session } } = await sb.auth.getSession();
+    await enterApp(session);
+  });
+
+  // 계정 카드 (관리 탭)
+  $('#btn-logout').addEventListener('click', async () => {
+    if (!sb) return;
+    await sb.auth.signOut().catch(() => {});
+    toast('로그아웃 됐어요 👋');
+  });
+
+  $('#btn-change-pw').addEventListener('click', () => {
+    const box = $('#pw-change-box');
+    box.hidden = !box.hidden;
+  });
+  $('#btn-save-pw').addEventListener('click', async () => {
+    if (!sb) return;
+    const pw = $('#new-password').value;
+    if (pw.length < 8) { toast('비밀번호는 8자 이상이어야 해요.'); return; }
+    const { error } = await sb.auth.updateUser({ password: pw });
+    if (error) { toast('변경 실패: ' + authMsg(error)); return; }
+    $('#new-password').value = '';
+    $('#pw-change-box').hidden = true;
+    toast('비밀번호가 변경됐어요 ✅');
+  });
+
+  $('#btn-delete-account').addEventListener('click', async () => {
+    if (!sb) return;
+    if (!confirm('정말 탈퇴할까요? 모든 기록이 영구 삭제됩니다.')) return;
+    if (!confirm('마지막 확인입니다. 되돌릴 수 없어요. 진행할까요?')) return;
+    const { error } = await sb.rpc('delete_own_account');
+    if (error) { toast('탈퇴 실패: ' + authMsg(error)); return; }
+    await sb.auth.signOut({ scope: 'local' }).catch(() => {});
+    leaveApp();
+    toast('탈퇴가 완료됐어요. 안녕히 가세요 👋');
+  });
+}
+
+/* =========================================================================
+ *  v1 localStorage 데이터 이관 (1회 제안)
+ * ======================================================================= */
+async function maybeImportLegacy() {
+  if (localStorage.getItem(LS.migrateDismissed)) return;
+  const oldMenus = loadJSON(LS.legacyMenus, []);
+  const oldRecords = loadJSON(LS.legacyRecords, []);
+  if (!oldMenus.length && !oldRecords.length) return;
+
+  const ok = confirm(
+    `이 브라우저에 예전(로컬 저장) 기록이 있어요 — 메뉴 ${oldMenus.length}개, 기록 ${oldRecords.length}건.\n` +
+    `지금 계정으로 가져올까요?\n\n(취소하면 다시 묻지 않지만, 데이터는 브라우저에 남아 있습니다)`
+  );
+  if (!ok) { localStorage.setItem(LS.migrateDismissed, '1'); return; }
+
+  try {
+    await importData({ menus: oldMenus, records: oldRecords });
+    // 성공: 원본을 백업 키로 이동
+    localStorage.setItem('cooldown.migrated.menus', JSON.stringify(oldMenus));
+    localStorage.setItem('cooldown.migrated.records', JSON.stringify(oldRecords));
+    localStorage.removeItem(LS.legacyMenus);
+    localStorage.removeItem(LS.legacyRecords);
+    toast(`로컬 기록 ${oldRecords.length}건을 계정으로 가져왔어요! 📥`);
+  } catch (err) {
+    toast('가져오기 실패: ' + authMsg(err));
+  }
+}
+
+// menus/records 형태의 JSON을 계정으로 삽입 (이관·파일 가져오기 공용)
+async function importData(data) {
+  const menuIdMap = {};
+  for (const om of data.menus || []) {
+    if (!om || !om.name) continue;
+    const m = await store.upsertMenu(om.name, om.cooldownDays != null ? Number(om.cooldownDays) : null);
+    if (om.id) menuIdMap[om.id] = m.id;
+  }
+  const rows = [];
+  for (const or of data.records || []) {
+    if (!or || !or.date) continue;
+    let mid = or.menuId ? menuIdMap[or.menuId] : null;
+    if (!mid && or.name) mid = (await store.upsertMenu(or.name, null)).id;
+    if (!mid) continue;
+    rows.push({ menu_id: mid, eaten_on: or.date, note: or.note || null, nutrition: or.nutrition || null });
+  }
+  if (rows.length) {
+    const { error } = await sb.from('records').insert(rows);
+    if (error) throw error;
+  }
+  await store.loadAll();
+  renderAll();
+}
+
+/* =========================================================================
+ *  인앱 '쿨타임 완료' 알림
+ * ======================================================================= */
+function computeNewlyReady() {
+  const last = Number(localStorage.getItem(LS.lastSeen) || 0);
+  const now = Date.now();
+  newlyReady = new Set();
+  if (last > 0) {
+    for (const m of menus) {
+      const s = menuStatus(m);
+      if (s.last && s.available && s.nextDate &&
+          s.nextDate.getTime() > last && s.nextDate.getTime() <= now) {
+        newlyReady.add(m.id);
+      }
+    }
+  }
+  localStorage.setItem(LS.lastSeen, String(now));
+}
+function notifyNewlyReady() {
+  updateTabDot();
+  if (!newlyReady.size) return;
+  const names = [...newlyReady].map((id) => getMenu(id)?.name).filter(Boolean);
+  if (!names.length) return;
+  const label = names.length === 1 ? `"${names[0]}"` : `"${names[0]}" 외 ${names.length - 1}개`;
+  toast(`🎉 ${label} 쿨타임 완료! 이제 먹어도 돼요`);
+}
+function updateTabDot() {
+  $('[data-tab=cooldown]').classList.toggle('has-dot', newlyReady.size > 0);
+}
+
+/* =========================================================================
+ *  렌더링 (v1과 동일 구조)
+ * ======================================================================= */
+let lastNutrition = null;
 
 function renderRecordTab() {
-  // 메뉴 자동완성
   $('#menu-suggestions').innerHTML = menus.map((m) => `<option value="${escapeHtml(m.name)}">`).join('');
 
-  // 최근 기록 (최신순 12개)
-  const recent = [...records].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.createdAt - a.createdAt)).slice(0, 12);
+  const recent = [...records]
+    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : b.createdAt - a.createdAt))
+    .slice(0, 12);
   $('#record-count').textContent = records.length ? `총 ${records.length}개` : '';
 
   const list = $('#recent-list');
@@ -273,7 +663,7 @@ function renderRecordTab() {
 }
 
 function renderCooldownTab() {
-  const statuses = menus.map(menuStatus).filter((s) => s.last); // 기록 있는 메뉴만
+  const statuses = menus.map(menuStatus).filter((s) => s.last);
   const ready = statuses.filter((s) => s.available).sort((a, b) => b.elapsed - a.elapsed);
   const waiting = statuses.filter((s) => !s.available).sort((a, b) => a.daysRemaining - b.daysRemaining);
 
@@ -302,6 +692,7 @@ function renderCooldownTab() {
 
 function cdCard(s) {
   const since = s.elapsed === 0 ? '오늘' : `${s.elapsed}일 전`;
+  const isNew = newlyReady.has(s.menu.id);
   const status = s.available
     ? `<span class="cd-status ready">먹어도 OK 🎉</span>`
     : `<span class="cd-status wait">${s.daysRemaining}일 남음</span>`;
@@ -309,14 +700,13 @@ function cdCard(s) {
     ? `마지막: ${s.last.date} (${since}) · 쿨타임 ${s.menu.cooldownDays}일`
     : `마지막: ${s.last.date} (${since}) · 다음 가능일 <b>${ymd(s.nextDate)}</b>`;
   return `<div class="cd-card ${s.available ? 'ready' : ''}">
-    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}</span>${status}</div>
+    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${isNew ? '<span class="badge-new">🎉 새로 완료</span>' : ''}</span>${status}</div>
     <div class="cd-meta">${meta}</div>
     <div class="bar"><span style="width:${Math.round(s.progress * 100)}%"></span></div>
   </div>`;
 }
 
 function renderManageTab() {
-  // 메뉴 목록
   const list = $('#menu-list');
   if (!menus.length) {
     list.innerHTML = `<li class="empty">아직 메뉴가 없어요.</li>`;
@@ -333,22 +723,27 @@ function renderManageTab() {
     }).join('');
   }
 
-  // 설정 값 반영
-  $('#set-default-cooldown').value = settings.defaultCooldownDays;
-  $('#set-provider').value = settings.llmProvider;
+  $('#set-default-cooldown').value = defaultCooldown();
+  $('#set-provider').value = llm.provider;
+  $('#acc-email').textContent = currentUser ? currentUser.email : '';
   renderProviderConfig();
 }
 
 function renderProviderConfig() {
-  const p = settings.llmProvider;
+  const p = llm.provider;
   const box = $('#provider-config');
   if (p === 'mock') { box.hidden = true; return; }
   box.hidden = false;
-  $('#set-key').value = settings.keys[p] || '';
-  $('#set-model').value = settings.models[p] || '';
+  $('#set-key').value = llm.keys[p] || '';
+  $('#set-model').value = llm.models[p] || '';
 }
 
-function renderAll() { renderRecordTab(); renderCooldownTab(); renderManageTab(); }
+function renderAll() {
+  renderRecordTab();
+  renderCooldownTab();
+  renderManageTab();
+  updateTabDot();
+}
 
 /* =========================================================================
  *  이벤트 바인딩
@@ -360,13 +755,13 @@ function initTabs() {
     $$('.tab').forEach((t) => t.classList.toggle('active', t === btn));
     const tab = btn.dataset.tab;
     $$('.panel').forEach((p) => p.classList.toggle('active', p.id === `panel-${tab}`));
+    if (tab === 'cooldown') btn.classList.remove('has-dot'); // 알림 점 해제 (배지는 유지)
   });
 }
 
 function initRecordForm() {
   $('#f-date').value = todayStr();
 
-  // 이름 입력 시 기존 메뉴면 쿨타임 자동 채움
   $('#f-name').addEventListener('change', () => {
     const m = findMenuByName($('#f-name').value);
     if (m) $('#f-cooldown').value = m.cooldownDays;
@@ -379,14 +774,12 @@ function initRecordForm() {
     const btn = $('#btn-ai');
     const hint = $('#ai-hint');
     btn.disabled = true;
-    hint.textContent = `분석 중… (${(PROVIDERS[settings.llmProvider] || PROVIDERS.mock).label})`;
+    hint.textContent = `분석 중… (${(PROVIDERS[llm.provider] || PROVIDERS.mock).label})`;
     try {
       const n = await analyzeNutrition(name);
       lastNutrition = n;
       showNutrition(n);
-      // 메모가 비어있으면 건강 코멘트 자동 채움
       if (!$('#f-note').value.trim() && n.healthNote) $('#f-note').value = n.healthNote;
-      // 쿨타임 비어있고 추천값 있으면 제안
       if (!$('#f-cooldown').value && n.suggestedCooldownDays) $('#f-cooldown').value = n.suggestedCooldownDays;
       hint.textContent = '';
     } catch (err) {
@@ -397,8 +790,8 @@ function initRecordForm() {
     }
   });
 
-  // 저장
-  $('#record-form').addEventListener('submit', (e) => {
+  // 저장 (클라우드)
+  $('#record-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const name = $('#f-name').value.trim();
     const date = $('#f-date').value || todayStr();
@@ -406,27 +799,36 @@ function initRecordForm() {
     const cdRaw = $('#f-cooldown').value;
     if (!name) return;
 
-    const cooldownDays = cdRaw === '' ? null : Math.max(0, parseInt(cdRaw, 10) || 0);
-    const menu = ensureMenu(name, cooldownDays);
-    records.push({ id: uid(), menuId: menu.id, name: menu.name, date, note, nutrition: lastNutrition, createdAt: Date.now() });
-    persist();
+    const submitBtn = e.target.querySelector('button[type=submit]');
+    submitBtn.disabled = true;
+    try {
+      const cooldownDays = cdRaw === '' ? null : Math.max(0, parseInt(cdRaw, 10) || 0);
+      const menu = await store.upsertMenu(name, cooldownDays);
+      await store.addRecord({ menuId: menu.id, date, note, nutrition: lastNutrition });
 
-    // 폼 리셋 (이름/메모/영양만, 날짜는 오늘로)
-    e.target.reset();
-    $('#f-date').value = todayStr();
-    hideNutrition();
-    lastNutrition = null;
-    renderAll();
-    toast(`"${menu.name}" 기록 완료! ✅`);
+      e.target.reset();
+      $('#f-date').value = todayStr();
+      hideNutrition();
+      lastNutrition = null;
+      renderAll();
+      toast(`"${menu.name}" 기록 완료! ✅`);
+    } catch (err) {
+      toast('저장 실패: ' + authMsg(err));
+    } finally {
+      submitBtn.disabled = false;
+    }
   });
 
-  // 기록 삭제 (이벤트 위임)
-  $('#recent-list').addEventListener('click', (e) => {
+  // 기록 삭제
+  $('#recent-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-record]')?.dataset.delRecord;
     if (!id) return;
-    records = records.filter((r) => r.id !== id);
-    persist();
-    renderAll();
+    try {
+      await store.deleteRecord(id);
+      renderAll();
+    } catch (err) {
+      toast('삭제 실패: ' + authMsg(err));
+    }
   });
 }
 
@@ -446,75 +848,98 @@ function hideNutrition() { const box = $('#f-nutrition'); box.hidden = true; box
 
 function initManage() {
   // 메뉴 쿨타임 인라인 수정
-  $('#menu-list').addEventListener('change', (e) => {
+  $('#menu-list').addEventListener('change', async (e) => {
     const id = e.target.dataset.menuCd;
     if (!id) return;
-    const m = getMenu(id);
-    if (m) { m.cooldownDays = Math.max(0, parseInt(e.target.value, 10) || 0); persist(); renderCooldownTab(); }
+    const days = Math.max(0, parseInt(e.target.value, 10) || 0);
+    try {
+      await store.updateMenuCooldown(id, days);
+      renderCooldownTab();
+    } catch (err) {
+      toast('수정 실패: ' + authMsg(err));
+    }
   });
+
   // 메뉴 삭제
-  $('#menu-list').addEventListener('click', (e) => {
+  $('#menu-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-menu]')?.dataset.delMenu;
     if (!id) return;
     const m = getMenu(id);
     const cnt = records.filter((r) => r.menuId === id).length;
     if (!confirm(`"${m?.name}" 메뉴와 관련 기록 ${cnt}개를 삭제할까요?`)) return;
-    menus = menus.filter((x) => x.id !== id);
-    records = records.filter((r) => r.menuId !== id);
-    persist();
-    renderAll();
+    try {
+      await store.deleteMenu(id);
+      renderAll();
+    } catch (err) {
+      toast('삭제 실패: ' + authMsg(err));
+    }
   });
 
-  // 설정
-  $('#set-default-cooldown').addEventListener('change', (e) => {
-    settings.defaultCooldownDays = Math.max(0, parseInt(e.target.value, 10) || 0);
-    persist();
+  // 기본 쿨타임 (계정 프로필에 저장)
+  $('#set-default-cooldown').addEventListener('change', async (e) => {
+    const v = Math.max(0, parseInt(e.target.value, 10) || 0);
+    try {
+      await store.updateProfile({ default_cooldown_days: v });
+      toast('기본 쿨타임을 저장했어요 ✅');
+    } catch (err) {
+      toast('저장 실패: ' + authMsg(err));
+    }
   });
+
+  // LLM 설정 (기기 로컬)
   $('#set-provider').addEventListener('change', (e) => {
-    settings.llmProvider = e.target.value;
-    persist();
+    llm.provider = e.target.value;
+    saveLlm();
     renderProviderConfig();
   });
   $('#set-key').addEventListener('change', (e) => {
-    if (settings.llmProvider !== 'mock') { settings.keys[settings.llmProvider] = e.target.value.trim(); persist(); }
+    if (llm.provider !== 'mock') { llm.keys[llm.provider] = e.target.value.trim(); saveLlm(); }
   });
   $('#set-model').addEventListener('change', (e) => {
-    if (settings.llmProvider !== 'mock') { settings.models[settings.llmProvider] = e.target.value.trim(); persist(); }
+    if (llm.provider !== 'mock') { llm.models[llm.provider] = e.target.value.trim(); saveLlm(); }
   });
 
-  // 데이터 내보내기/가져오기/삭제
+  // 데이터 내보내기 (키 등 민감정보는 제외)
   $('#btn-export').addEventListener('click', () => {
-    const blob = new Blob([JSON.stringify({ menus, records, settings, exportedAt: todayStr() }, null, 2)], { type: 'application/json' });
+    const blob = new Blob(
+      [JSON.stringify({ menus, records, exportedAt: todayStr() }, null, 2)],
+      { type: 'application/json' }
+    );
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = `cooldown-backup-${todayStr()}.json`;
     a.click();
     URL.revokeObjectURL(a.href);
   });
+
+  // 데이터 가져오기 (계정으로 삽입)
   $('#import-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = () => {
+    reader.onload = async () => {
       try {
         const data = JSON.parse(reader.result);
-        if (Array.isArray(data.menus)) menus = data.menus;
-        if (Array.isArray(data.records)) records = data.records;
-        if (data.settings) settings = Object.assign(settings, data.settings);
-        persist();
-        renderAll();
+        await importData(data);
         toast('가져오기 완료! 📥');
-      } catch { toast('파일을 읽을 수 없어요.'); }
+      } catch (err) {
+        toast('가져오기 실패: ' + authMsg(err));
+      }
       e.target.value = '';
     };
     reader.readAsText(file);
   });
-  $('#btn-reset').addEventListener('click', () => {
+
+  // 전체 삭제 (계정 데이터)
+  $('#btn-reset').addEventListener('click', async () => {
     if (!confirm('모든 기록과 메뉴를 삭제할까요? 되돌릴 수 없습니다.')) return;
-    menus = []; records = [];
-    persist();
-    renderAll();
-    toast('전체 삭제 완료');
+    try {
+      await store.deleteAllData();
+      renderAll();
+      toast('전체 삭제 완료');
+    } catch (err) {
+      toast('삭제 실패: ' + authMsg(err));
+    }
   });
 }
 
@@ -522,4 +947,5 @@ function initManage() {
 initTabs();
 initRecordForm();
 initManage();
-renderAll();
+initAuthUI();
+initAuth();

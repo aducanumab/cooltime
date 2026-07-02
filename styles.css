@@ -17,6 +17,9 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* hidden 속성이 display:flex 등 클래스 스타일에 지지 않도록 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   background: var(--bg);
@@ -221,6 +224,35 @@ textarea { resize: vertical; }
 }
 @keyframes pop { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
 
+/* ---------- Auth ---------- */
+.auth-wrap { padding: 18px 14px 40px; display: flex; flex-direction: column; gap: 12px; }
+.auth-card { margin-top: 8px; }
+.auth-links {
+  display: flex; gap: 8px; justify-content: center; align-items: center;
+  font-size: 0.85rem; margin: 4px 0 0;
+}
+.auth-links a { color: var(--accent-d); font-weight: 600; text-decoration: none; }
+.auth-links a:hover { text-decoration: underline; }
+.auth-links span { color: var(--muted); }
+.auth-foot { text-align: center; }
+.form-error {
+  background: #fdecec; color: var(--danger); border-radius: 10px;
+  padding: 9px 12px; font-size: 0.82rem; margin: 0; line-height: 1.5;
+}
+code { background: #f1f0f3; border-radius: 6px; padding: 1px 6px; font-size: 0.85em; }
+
+/* ---------- 새로 완료 배지 / 탭 알림 점 ---------- */
+.badge-new {
+  background: var(--ok-bg); color: var(--ok);
+  font-size: 0.72rem; font-weight: 800; border-radius: 8px;
+  padding: 3px 7px; margin-left: 7px; vertical-align: 2px; white-space: nowrap;
+}
+.tab { position: relative; }
+.tab.has-dot::after {
+  content: ''; position: absolute; top: 6px; right: 10px;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+}
+
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16171a; --card: #212327; --text: #ececf0; --muted: #8d929c;
@@ -232,4 +264,7 @@ textarea { resize: vertical; }
   .nutrition .chip { background: #243049; color: #9db5ff; }
   .nutrition .note { background: #1a1c1f; }
   .bar { background: #2c2f34; }
+  .form-error { background: #3a2427; }
+  code { background: #2c2f34; }
+  .badge-new { background: #1d3529; }
 }
