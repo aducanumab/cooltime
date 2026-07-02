@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
   <meta name="theme-color" content="#ff5a3c" />
   <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
-  <link rel="stylesheet" href="styles.css?v=3" />
+  <link rel="stylesheet" href="styles.css?v=4" />
 </head>
 <body>
   <div class="app">
@@ -139,9 +139,16 @@
             </div>
             <div class="nutrition" id="f-nutrition" hidden></div>
 
+            <input type="file" id="photo-file" accept="image/*" capture="environment" hidden />
+            <div class="photo-box" id="photo-box" hidden>
+              <img id="f-photo-preview" class="photo-preview" alt="촬영한 사진" hidden />
+              <span class="ai-hint" id="photo-hint"></span>
+              <div class="photo-cands" id="photo-candidates" hidden></div>
+            </div>
+
             <div class="form-actions">
               <button type="submit" class="btn btn-primary">기록 저장</button>
-              <button type="button" class="btn btn-soft" id="btn-photo" title="추후 지원 예정" disabled>📷 사진으로 기록 (준비중)</button>
+              <button type="button" class="btn btn-soft" id="btn-photo">📷 사진으로 기록</button>
             </div>
           </form>
 
@@ -198,6 +205,26 @@
                 <input type="text" id="set-model" placeholder="모델 ID" />
               </label>
             </div>
+
+            <label class="field">
+              <span class="field-label">📷 사진 인식 공급자</span>
+              <select id="set-recognizer">
+                <option value="mock">데모 — 무료·로컬</option>
+                <option value="tesseract">기기 내 OCR (무료 · 메뉴판/영수증 글자)</option>
+                <option value="claude">Claude 비전 (음식 사진 인식)</option>
+                <option value="openai">OpenAI 비전</option>
+                <option value="gemini">Gemini 비전 (무료 티어 가능)</option>
+              </select>
+            </label>
+            <div id="recognizer-config" hidden>
+              <div class="warn-box">
+                ⚠️ 비전 공급자: 사진 인식 시 본인 키로 <b>호출당 과금</b> + 사진이 외부 API로 전송됩니다. (Gemini는 무료 티어 있음)
+              </div>
+              <label class="field">
+                <span class="field-label">이 공급자 API 키 — 이 브라우저에만 저장</span>
+                <input type="password" id="set-recognizer-key" placeholder="본인 API 키 입력" />
+              </label>
+            </div>
           </div>
 
           <div class="card">
@@ -236,6 +263,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=2" defer></script>
+  <script src="app.js?v=4" defer></script>
 </body>
 </html>

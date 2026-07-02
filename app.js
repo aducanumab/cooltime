@@ -38,6 +38,7 @@ if (!llm) {
   const legacy = loadJSON(LS.legacySettings, {});
   llm = {
     provider: legacy.llmProvider || 'mock',
+    recognizer: 'mock',
     keys: Object.assign({ claude: '', openai: '', gemini: '' }, legacy.keys || {}),
     models: Object.assign(
       { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash' },
@@ -46,6 +47,7 @@ if (!llm) {
   };
   saveJSON(LS.llm, llm);
 }
+if (llm && !llm.recognizer) llm.recognizer = 'mock'; // 기존 사용자 backfill
 function saveLlm() { saveJSON(LS.llm, llm); }
 
 /* ---------- 앱 상태 (클라우드 캐시) ---------- */
@@ -355,6 +357,186 @@ function mockNutrition(name) {
     healthNote: '데모 추정치예요. 정확한 값은 AI 공급자를 연결하면 채워집니다.',
     suggestedCooldownDays: defaultCooldown(),
   };
+}
+
+/* =========================================================================
+ *  사진 인식 — 공급자 무관 어댑터 (PROVIDERS/analyzeNutrition과 동형)
+ *  recognizeMenu(dataUrl) 하나만 호출하면 설정된 인식 공급자가 처리.
+ *  - mock: 무료·로컬 데모
+ *  - tesseract: 기기 내 OCR (메뉴판/영수증 글자). 키 불필요, 최초 로딩 수 MB
+ *  - claude/openai/gemini: 비전 (음식 접시 인식). 본인 키 + 호출당 과금 + 사진 외부 전송
+ *  반환(정규화): { name, candidates[], confidence, rawText }
+ * ======================================================================= */
+const RECOGNIZE_SYS =
+  '너는 사진 속 음식(또는 메뉴판·영수증의 메뉴 항목)을 인식하는 도우미다. ' +
+  '사진에서 먹었을 법한 대표 메뉴명을 한국어로 추정하라. JSON으로만 답하라. ' +
+  '키: name(가장 가능성 높은 메뉴명 하나, 문자열), candidates(가능성 있는 메뉴명 배열, 최대 5개), confidence(0~1 숫자). ' +
+  '음식/메뉴가 안 보이면 name은 빈 문자열. JSON 외 텍스트 금지.';
+
+function splitDataUrl(dataUrl) {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || '');
+  if (!m) throw new Error('이미지 형식 오류');
+  return { mediaType: m[1], base64: m[2] };
+}
+function normalizeRecognition(o) {
+  o = o || {};
+  const conf = Number(o.confidence);
+  return {
+    name: o.name ? String(o.name).trim() : '',
+    candidates: Array.isArray(o.candidates) ? o.candidates.map((c) => String(c).trim()).filter(Boolean).slice(0, 6) : [],
+    confidence: Number.isFinite(conf) ? conf : null,
+    rawText: o.rawText ? String(o.rawText) : '',
+  };
+}
+// OCR 원문에서 메뉴명 후보 뽑기 (가격/숫자/기호 줄 제거)
+function ocrCandidates(text) {
+  return [...new Set(
+    (text || '').split(/\n+/)
+      .map((s) => s.replace(/[0-9,.\-₩:()\/]+/g, ' ').trim())
+      .filter((s) => /[가-힣]/.test(s) && s.length >= 2)
+  )].slice(0, 6);
+}
+
+// 이미지 리사이즈·압축 → base64 dataURL (처리속도↑, 비전 비용↓)
+function fileToResizedDataUrl(file, maxEdge = 1280, quality = 0.72) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const scale = Math.min(1, maxEdge / Math.max(img.width, img.height));
+        const w = Math.max(1, Math.round(img.width * scale));
+        const h = Math.max(1, Math.round(img.height * scale));
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(img, 0, 0, w, h);
+        URL.revokeObjectURL(url);
+        resolve(c.toDataURL('image/jpeg', quality));
+      } catch (e) { URL.revokeObjectURL(url); reject(e); }
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('이미지를 열 수 없어요 (지원하지 않는 형식일 수 있음)')); };
+    img.src = url;
+  });
+}
+
+// tesseract.js 지연 로드 (tesseract 선택 시에만 다운로드)
+let _tessLoading;
+function loadTesseract() {
+  if (window.Tesseract) return Promise.resolve();
+  if (!_tessLoading) {
+    _tessLoading = new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+      s.onload = resolve;
+      s.onerror = () => reject(new Error('tesseract.js 로드 실패 (네트워크 확인)'));
+      document.head.appendChild(s);
+    });
+  }
+  return _tessLoading;
+}
+
+const RECOGNIZERS = {
+  mock: {
+    label: '데모(무료·로컬)', needsKey: false,
+    async recognize() {
+      await sleep(500);
+      const keys = Object.keys(MOCK_DB);
+      return normalizeRecognition({ name: keys[0], candidates: keys.slice(0, 4), confidence: 0.5 });
+    },
+  },
+
+  tesseract: {
+    label: '기기 내 OCR', needsKey: false,
+    async recognize(dataUrl) {
+      await loadTesseract();
+      const hint = $('#photo-hint');
+      const { data } = await window.Tesseract.recognize(dataUrl, 'kor+eng', {
+        logger: (m) => { if (hint && m && m.progress != null) hint.textContent = `OCR ${Math.round(m.progress * 100)}%…`; },
+      });
+      const text = data.text || '';
+      const candidates = ocrCandidates(text);
+      return normalizeRecognition({ name: candidates[0] || '', candidates, confidence: (data.confidence || 0) / 100, rawText: text });
+    },
+  },
+
+  claude: {
+    label: 'Claude 비전', needsKey: true,
+    async recognize(dataUrl) {
+      const { mediaType, base64 } = splitDataUrl(dataUrl);
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-api-key': llm.keys.claude,
+          'anthropic-version': '2023-06-01',
+          'anthropic-dangerous-direct-browser-access': 'true',
+        },
+        body: JSON.stringify({
+          model: llm.models.claude,
+          max_tokens: 200,
+          system: RECOGNIZE_SYS,
+          messages: [{ role: 'user', content: [
+            { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+            { type: 'text', text: '이 사진을 분석해 JSON으로만 답하라.' },
+          ] }],
+        }),
+      });
+      if (!res.ok) throw new Error(`Claude ${res.status}: ${await res.text()}`);
+      const d = await res.json();
+      return normalizeRecognition(extractJson(d.content?.[0]?.text));
+    },
+  },
+
+  openai: {
+    label: 'OpenAI 비전', needsKey: true,
+    async recognize(dataUrl) {
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${llm.keys.openai}` },
+        body: JSON.stringify({
+          model: llm.models.openai,
+          messages: [
+            { role: 'system', content: RECOGNIZE_SYS },
+            { role: 'user', content: [
+              { type: 'text', text: '이 사진을 분석해 JSON으로만 답하라.' },
+              { type: 'image_url', image_url: { url: dataUrl } },
+            ] },
+          ],
+          response_format: { type: 'json_object' },
+        }),
+      });
+      if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
+      const d = await res.json();
+      return normalizeRecognition(extractJson(d.choices?.[0]?.message?.content));
+    },
+  },
+
+  gemini: {
+    label: 'Gemini 비전', needsKey: true,
+    async recognize(dataUrl) {
+      const { mediaType, base64 } = splitDataUrl(dataUrl);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${llm.models.gemini}:generateContent?key=${encodeURIComponent(llm.keys.gemini)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [
+          { text: `${RECOGNIZE_SYS}\n\n이 사진을 분석해 JSON으로만 답하라.` },
+          { inline_data: { mime_type: mediaType, data: base64 } },
+        ] }] }),
+      });
+      if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
+      const d = await res.json();
+      return normalizeRecognition(extractJson(d.candidates?.[0]?.content?.parts?.[0]?.text));
+    },
+  },
+};
+
+async function recognizeMenu(dataUrl) {
+  const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.mock;
+  if (rec.needsKey && !llm.keys[llm.recognizer]) {
+    throw new Error(`${rec.label} API 키가 설정되지 않았습니다. (관리 > 설정 > 사진 인식 공급자)`);
+  }
+  return rec.recognize(dataUrl);
 }
 
 /* =========================================================================
@@ -725,8 +907,10 @@ function renderManageTab() {
 
   $('#set-default-cooldown').value = defaultCooldown();
   $('#set-provider').value = llm.provider;
+  $('#set-recognizer').value = llm.recognizer;
   $('#acc-email').textContent = currentUser ? currentUser.email : '';
   renderProviderConfig();
+  renderRecognizerConfig();
 }
 
 function renderProviderConfig() {
@@ -736,6 +920,15 @@ function renderProviderConfig() {
   box.hidden = false;
   $('#set-key').value = llm.keys[p] || '';
   $('#set-model').value = llm.models[p] || '';
+}
+
+function renderRecognizerConfig() {
+  const p = llm.recognizer;
+  const rec = RECOGNIZERS[p] || RECOGNIZERS.mock;
+  const box = $('#recognizer-config');
+  if (!rec.needsKey) { box.hidden = true; return; } // mock/tesseract는 키 불필요
+  box.hidden = false;
+  $('#set-recognizer-key').value = llm.keys[p] || '';
 }
 
 function renderAll() {
@@ -809,6 +1002,7 @@ function initRecordForm() {
       e.target.reset();
       $('#f-date').value = todayStr();
       hideNutrition();
+      resetPhotoUI();
       lastNutrition = null;
       renderAll();
       toast(`"${menu.name}" 기록 완료! ✅`);
@@ -830,6 +1024,83 @@ function initRecordForm() {
       toast('삭제 실패: ' + authMsg(err));
     }
   });
+
+  // 📷 사진으로 기록
+  $('#btn-photo').addEventListener('click', () => $('#photo-file').click());
+  $('#photo-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = ''; // 같은 파일 다시 선택 가능하게
+    if (!file) return;
+    const btn = $('#btn-photo');
+    const hint = $('#photo-hint');
+    btn.disabled = true;
+    $('#photo-box').hidden = false;
+    hint.textContent = '이미지 준비 중…';
+    try {
+      const dataUrl = await fileToResizedDataUrl(file);
+      showPhotoPreview(dataUrl);
+      const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.mock;
+      hint.textContent = `인식 중… (${rec.label})`;
+      const r = await recognizeMenu(dataUrl);
+      hint.textContent = '';
+      handleRecognition(r);
+    } catch (err) {
+      hint.textContent = '';
+      toast('사진 인식 실패: ' + (err.message || err));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  // 후보 칩 클릭 → 이름 채움
+  $('#photo-candidates').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-cand]')?.dataset.cand;
+    if (!c) return;
+    const el = $('#f-name');
+    el.value = c;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+function showPhotoPreview(dataUrl) {
+  $('#photo-box').hidden = false;
+  const img = $('#f-photo-preview');
+  img.src = dataUrl;
+  img.hidden = false;
+}
+function resetPhotoUI() {
+  $('#photo-box').hidden = true;
+  const img = $('#f-photo-preview');
+  img.removeAttribute('src');
+  img.hidden = true;
+  $('#photo-hint').textContent = '';
+  const cands = $('#photo-candidates');
+  cands.hidden = true;
+  cands.innerHTML = '';
+}
+function handleRecognition(r) {
+  const cands = $('#photo-candidates');
+  if (r.name) {
+    const el = $('#f-name');
+    el.value = r.name;
+    el.dispatchEvent(new Event('change', { bubbles: true })); // 쿨타임 자동채움 트리거
+  }
+  if (r.candidates && r.candidates.length > 1) {
+    cands.hidden = false;
+    cands.innerHTML = '<span class="cand-label">후보:</span>' +
+      r.candidates.map((c) => `<button type="button" class="cand" data-cand="${escapeHtml(c)}">${escapeHtml(c)}</button>`).join('');
+  } else {
+    cands.hidden = true;
+    cands.innerHTML = '';
+  }
+  if (!r.name) {
+    toast('메뉴명을 인식하지 못했어요. 이름을 직접 입력하세요.');
+    if (r.rawText && !$('#f-note').value.trim()) $('#f-note').value = r.rawText.slice(0, 200);
+  } else if (r.confidence != null && r.confidence < 0.5) {
+    toast('정확도가 낮아요 — 이름을 확인·수정하세요.');
+  } else {
+    toast(`"${r.name}"(으)로 인식했어요. 확인 후 저장하세요.`);
+  }
 }
 
 function showNutrition(n) {
@@ -897,6 +1168,17 @@ function initManage() {
   });
   $('#set-model').addEventListener('change', (e) => {
     if (llm.provider !== 'mock') { llm.models[llm.provider] = e.target.value.trim(); saveLlm(); }
+  });
+
+  // 사진 인식 공급자 (기기 로컬)
+  $('#set-recognizer').addEventListener('change', (e) => {
+    llm.recognizer = e.target.value;
+    saveLlm();
+    renderRecognizerConfig();
+  });
+  $('#set-recognizer-key').addEventListener('change', (e) => {
+    const p = llm.recognizer;
+    if (llm.keys[p] != null) { llm.keys[p] = e.target.value.trim(); saveLlm(); }
   });
 
   // 데이터 내보내기 (키 등 민감정보는 제외)
