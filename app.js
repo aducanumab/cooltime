@@ -573,6 +573,7 @@ function authMsg(err) {
 
 /* ---------- 미리보기(게스트) 모드 ---------- */
 let guestMode = false;
+let hadAuthedSession = false; // 이 페이지에서 로그인한 적 있는지 (로그아웃 vs 최초 방문 구분)
 
 function togglePreviewBanner(show) {
   const b = $('#preview-banner');
@@ -621,6 +622,7 @@ async function enterApp(session) {
   guestMode = false;
   togglePreviewBanner(false);
   currentUser = session.user;
+  hadAuthedSession = true;
   try {
     await store.loadAll();
   } catch (err) {
@@ -636,8 +638,15 @@ async function enterApp(session) {
 }
 
 function leaveApp() {
-  // 로그아웃/세션 없음 → 로그인 벽 대신 미리보기로
-  enterPreview();
+  // 명시적 로그아웃 → 로그인 화면(깔끔한 나가기). 메모리 비우고 배너 끔.
+  guestMode = false;
+  currentUser = null; profile = null;
+  menus = []; records = [];
+  loadedForUser = null;
+  newlyReady = new Set();
+  setGate(false);
+  togglePreviewBanner(false);
+  showAuthScreen('login');
 }
 
 function initAuth() {
@@ -649,9 +658,11 @@ function initAuth() {
   sb.auth.onAuthStateChange((event, session) => {
     // supabase-js 콜백 안에서 곧바로 다른 supabase 호출 시 교착 가능 → 밖으로 미룸
     setTimeout(() => {
-      if (event === 'PASSWORD_RECOVERY') { setGate(false); showAuthScreen('recovery'); return; }
-      if (session) enterApp(session);
-      else leaveApp();
+      if (event === 'PASSWORD_RECOVERY') { setGate(false); togglePreviewBanner(false); showAuthScreen('recovery'); return; }
+      if (session) { enterApp(session); return; }
+      // 세션 없음: 명시적 로그아웃 → 로그인 화면 / 최초 방문·둘러보기 → 데모 미리보기
+      if (event === 'SIGNED_OUT' && hadAuthedSession) leaveApp();
+      else enterPreview();
     }, 0);
   });
 }
