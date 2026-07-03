@@ -114,12 +114,22 @@ supabase-schema.sql  # DB 스키마 + RLS — Supabase SQL Editor에서 1회 실
 
 | 공급자 | 무엇에 | 비용 | 비고 |
 |---|---|---|---|
+| **자동 인식 (서비스 제공)** ⭐기본 | **음식 접시 인식** | 이용자 무료 (관리자가 부담) | 로그인 필요 · 키 입력 불필요 · 관리자 키는 **서버(프록시)에만** |
 | **데모(mock)** | 배선 확인용 | 0원 | 실제 인식 아님 |
 | **기기 내 OCR (tesseract)** | 메뉴판·영수증 **글자** | 무료·오프라인 | 최초 1회 한국어 데이터(수 MB) 다운로드. 음식 접시엔 못 씀 |
-| **Claude / OpenAI / Gemini 비전** | **음식 접시 인식** | 호출당 과금 (Gemini는 무료 티어 있음) | 본인 키 필요 · **사진이 외부 API로 전송됨** |
-| **OpenRouter** | **음식 접시 인식** (멀티모달 모델) | `:free` 모델은 무료(레이트리밋) | OpenRouter 키 필요 · 모델 ID 지정(기본 `google/gemma-4-31b-it:free`) |
+| **Claude / OpenAI / Gemini / OpenRouter 비전 (BYOK)** | **음식 접시 인식** | 본인 키·호출당 | 자가호스팅/고급용. 키는 브라우저에만 저장 |
 
-### OpenRouter로 무료 비전 쓰기 (Gemma 4 등)
+### 자동 인식 셋업 (관리자 1회) — 서버 프록시로 키 보호
+이용자마다 키를 넣게 하지 않고, **관리자 키 하나로 모든 로그인 유저에게 인식**을 제공합니다. 키는 브라우저에 노출되지 않도록 **Supabase Edge Function**(서버)에 보관합니다.
+
+1. **OpenRouter 키 발급**: https://openrouter.ai → Keys → `sk-or-v1-...`
+2. **함수 배포**: Supabase 대시보드 → **Edge Functions → Deploy a new function → Via Editor** → 이름 `recognize` → [`supabase/functions/recognize/index.ts`](supabase/functions/recognize/index.ts) 내용 붙여넣고 **Deploy**
+3. **시크릿 설정**: Edge Functions → **Secrets** 에 `OPENROUTER_API_KEY` = 발급한 키 추가 (선택: `OPENROUTER_MODEL`, 기본 `google/gemma-4-31b-it:free`)
+4. 끝 — 로그인한 유저가 📷 사진으로 기록하면 서버가 대신 인식해 **메뉴 후보 최대 4개**를 돌려줍니다. (키 노출 0, 게스트·미로그인은 401로 차단)
+
+> 인식 프롬프트를 "JSON·최대 4개·설명 금지"로 강하게 제약해 Gemma의 장황한 출력을 막았습니다. 함수 소스는 repo의 [index.ts](supabase/functions/recognize/index.ts)가 정본입니다(대시보드 편집기는 버전관리 없음).
+
+### (대안) OpenRouter를 개인 키로 직접 쓰기 (BYOK · 자가호스팅용)
 1. https://openrouter.ai 가입 → **Keys**에서 API 키 발급(`sk-or-v1-...`)
 2. 관리 > 설정 > **사진 인식 공급자 = OpenRouter** 선택 → 키 입력, 모델명은 기본값 `google/gemma-4-31b-it:free`(무료·멀티모달) 그대로 두거나 원하는 모델 ID로 변경
 3. OpenRouter는 OpenAI 호환 API라 같은 키를 **AI 영양분석 공급자**에도 그대로 쓸 수 있어요.

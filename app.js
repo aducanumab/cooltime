@@ -38,7 +38,7 @@ if (!llm) {
   const legacy = loadJSON(LS.legacySettings, {});
   llm = {
     provider: legacy.llmProvider || 'mock',
-    recognizer: 'mock',
+    recognizer: 'builtin',
     keys: Object.assign({ claude: '', openai: '', gemini: '', openrouter: '' }, legacy.keys || {}),
     models: Object.assign(
       { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', openrouter: 'google/gemma-4-31b-it:free' },
@@ -397,10 +397,10 @@ function mockNutrition(name) {
  *  반환(정규화): { name, candidates[], confidence, rawText }
  * ======================================================================= */
 const RECOGNIZE_SYS =
-  '너는 사진 속 음식(또는 메뉴판·영수증의 메뉴 항목)을 인식하는 도우미다. ' +
-  '사진에서 먹었을 법한 대표 메뉴명을 한국어로 추정하라. JSON으로만 답하라. ' +
-  '키: name(가장 가능성 높은 메뉴명 하나, 문자열), candidates(가능성 있는 메뉴명 배열, 최대 5개), confidence(0~1 숫자). ' +
-  '음식/메뉴가 안 보이면 name은 빈 문자열. JSON 외 텍스트 금지.';
+  '사진 속 음식을 인식해 대표 메뉴명을 최대 4개까지 한국어로 추출한다. ' +
+  '반드시 JSON 하나만 출력한다: {"candidates":["메뉴1","메뉴2"]}. ' +
+  '각 항목은 짧은 메뉴명(예: 떡볶이, 김밥). 설명·문장·마크다운·코드블록 금지. ' +
+  '음식이 안 보이면 {"candidates":[]}.';
 
 function splitDataUrl(dataUrl) {
   const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl || '');
@@ -410,9 +410,12 @@ function splitDataUrl(dataUrl) {
 function normalizeRecognition(o) {
   o = o || {};
   const conf = Number(o.confidence);
+  const candidates = Array.isArray(o.candidates)
+    ? o.candidates.map((c) => String(c).trim()).filter(Boolean).slice(0, 4)
+    : [];
   return {
-    name: o.name ? String(o.name).trim() : '',
-    candidates: Array.isArray(o.candidates) ? o.candidates.map((c) => String(c).trim()).filter(Boolean).slice(0, 6) : [],
+    name: o.name ? String(o.name).trim() : (candidates[0] || ''),
+    candidates,
     confidence: Number.isFinite(conf) ? conf : null,
     rawText: o.rawText ? String(o.rawText) : '',
   };
@@ -465,6 +468,20 @@ function loadTesseract() {
 }
 
 const RECOGNIZERS = {
+  /* ---- 서비스 내장: 관리자 키를 쓰는 Supabase Edge Function 프록시 (키 노출 없음) ---- */
+  builtin: {
+    label: '자동 인식 (서비스 제공)', needsKey: false,
+    async recognize(dataUrl) {
+      if (!currentUser) throw new Error('로그인하면 사진 자동 인식을 쓸 수 있어요.');
+      const { data, error } = await sb.functions.invoke('recognize', { body: { image: dataUrl } });
+      if (error) {
+        throw new Error('인식 서버 오류: ' + (error.message || error) + ' (관리자: recognize 함수·시크릿 확인)');
+      }
+      if (data && data.error) throw new Error(data.error);
+      return normalizeRecognition({ name: data && data.name, candidates: data && data.candidates });
+    },
+  },
+
   mock: {
     label: '데모(무료·로컬)', needsKey: false,
     async recognize() {

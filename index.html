@@ -216,6 +216,7 @@
             <label class="field">
               <span class="field-label">사진 인식 공급자</span>
               <select id="set-recognizer">
+                <option value="builtin">자동 인식 (서비스 제공 · 로그인 필요)</option>
                 <option value="mock">데모 — 무료·로컬</option>
                 <option value="tesseract">기기 내 OCR (무료 · 메뉴판/영수증 글자)</option>
                 <option value="claude">Claude 비전 (음식 사진 인식)</option>
@@ -283,6 +284,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=8" defer></script>
+  <script src="app.js?v=9" defer></script>
 </body>
 </html>
