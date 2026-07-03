@@ -195,6 +195,7 @@
                 <option value="claude">Claude (Anthropic)</option>
                 <option value="openai">OpenAI (GPT)</option>
                 <option value="gemini">Google Gemini</option>
+                <option value="openrouter">OpenRouter (Gemma 등 · :free 무료)</option>
               </select>
             </label>
 
@@ -220,15 +221,20 @@
                 <option value="claude">Claude 비전 (음식 사진 인식)</option>
                 <option value="openai">OpenAI 비전</option>
                 <option value="gemini">Gemini 비전 (무료 티어 가능)</option>
+                <option value="openrouter">OpenRouter (Gemma 4 등 · :free 모델 무료)</option>
               </select>
             </label>
             <div id="recognizer-config" hidden>
               <div class="warn-box">
-                ⚠️ 비전 공급자: 사진 인식 시 본인 키로 <b>호출당 과금</b> + 사진이 외부 API로 전송됩니다. (Gemini는 무료 티어 있음)
+                ⚠️ 비전 공급자: 사진 인식 시 본인 키로 <b>호출당 과금</b> + 사진이 외부 API로 전송됩니다. (Gemini·OpenRouter는 무료 모델 있음)
               </div>
               <label class="field">
                 <span class="field-label">이 공급자 API 키 — 이 브라우저에만 저장</span>
                 <input type="password" id="set-recognizer-key" placeholder="본인 API 키 입력" />
+              </label>
+              <label class="field">
+                <span class="field-label">모델명</span>
+                <input type="text" id="set-recognizer-model" placeholder="예: google/gemma-4-31b-it:free" />
               </label>
             </div>
           </div>
@@ -277,6 +283,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=7" defer></script>
+  <script src="app.js?v=8" defer></script>
 </body>
 </html>

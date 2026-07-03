@@ -117,6 +117,13 @@ supabase-schema.sql  # DB 스키마 + RLS — Supabase SQL Editor에서 1회 실
 | **데모(mock)** | 배선 확인용 | 0원 | 실제 인식 아님 |
 | **기기 내 OCR (tesseract)** | 메뉴판·영수증 **글자** | 무료·오프라인 | 최초 1회 한국어 데이터(수 MB) 다운로드. 음식 접시엔 못 씀 |
 | **Claude / OpenAI / Gemini 비전** | **음식 접시 인식** | 호출당 과금 (Gemini는 무료 티어 있음) | 본인 키 필요 · **사진이 외부 API로 전송됨** |
+| **OpenRouter** | **음식 접시 인식** (멀티모달 모델) | `:free` 모델은 무료(레이트리밋) | OpenRouter 키 필요 · 모델 ID 지정(기본 `google/gemma-4-31b-it:free`) |
+
+### OpenRouter로 무료 비전 쓰기 (Gemma 4 등)
+1. https://openrouter.ai 가입 → **Keys**에서 API 키 발급(`sk-or-v1-...`)
+2. 관리 > 설정 > **사진 인식 공급자 = OpenRouter** 선택 → 키 입력, 모델명은 기본값 `google/gemma-4-31b-it:free`(무료·멀티모달) 그대로 두거나 원하는 모델 ID로 변경
+3. OpenRouter는 OpenAI 호환 API라 같은 키를 **AI 영양분석 공급자**에도 그대로 쓸 수 있어요.
+> `:free` 모델은 무료지만 분당·일일 호출 제한이 있습니다. 이미지가 OpenRouter 서버로 전송되는 점은 다른 비전 공급자와 동일.
 
 - 비전 공급자는 키를 **이 브라우저에만** 저장하고, 인식할 때만 호출됩니다(사진 저장 안 함 — 인식 후 폐기).
 - 사진 처리 전 자동으로 리사이즈·압축(장변 1280px, JPEG)해서 속도·비용을 줄입니다.
