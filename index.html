@@ -3,14 +3,15 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#ff5a3c" />
+  <meta name="theme-color" content="#edece3" />
   <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body>
   <div class="app">
     <header class="app-header">
-      <h1>🍢 쿨타임 트래커</h1>
+      <h1>쿨타임 트래커</h1>
       <p class="subtitle">먹거나 한 걸 기록하고, 다시 해도 되는 날까지 카운트다운</p>
     </header>
 
@@ -100,9 +101,9 @@
     <!-- ===================== 앱 본체 (로그인 상태) ===================== -->
     <div id="app-view" hidden>
       <nav class="tabbar" id="tabbar">
-        <button class="tab active" data-tab="record">📝 기록</button>
-        <button class="tab" data-tab="cooldown">⏳ 쿨타임</button>
-        <button class="tab" data-tab="manage">⚙️ 관리</button>
+        <button class="tab active" data-tab="record">기록</button>
+        <button class="tab" data-tab="cooldown">쿨타임</button>
+        <button class="tab" data-tab="manage">관리</button>
       </nav>
 
       <main class="content">
@@ -134,7 +135,7 @@
             </label>
 
             <div class="ai-box">
-              <button type="button" class="btn btn-ghost" id="btn-ai">🤖 AI로 영양정보 채우기</button>
+              <button type="button" class="btn btn-ghost" id="btn-ai">AI로 영양정보 채우기</button>
               <span class="ai-hint" id="ai-hint"></span>
             </div>
             <div class="nutrition" id="f-nutrition" hidden></div>
@@ -148,7 +149,7 @@
 
             <div class="form-actions">
               <button type="submit" class="btn btn-primary">기록 저장</button>
-              <button type="button" class="btn btn-soft" id="btn-photo">📷 사진으로 기록</button>
+              <button type="button" class="btn btn-soft" id="btn-photo">사진으로 기록</button>
             </div>
           </form>
 
@@ -207,7 +208,7 @@
             </div>
 
             <label class="field">
-              <span class="field-label">📷 사진 인식 공급자</span>
+              <span class="field-label">사진 인식 공급자</span>
               <select id="set-recognizer">
                 <option value="mock">데모 — 무료·로컬</option>
                 <option value="tesseract">기기 내 OCR (무료 · 메뉴판/영수증 글자)</option>
@@ -247,10 +248,10 @@
           <div class="card">
             <h2 class="card-title">데이터</h2>
             <div class="form-actions">
-              <button type="button" class="btn btn-soft" id="btn-export">⬇️ 내보내기(JSON)</button>
-              <label class="btn btn-soft" for="import-file">⬆️ 가져오기</label>
+              <button type="button" class="btn btn-soft" id="btn-export">내보내기 (JSON)</button>
+              <label class="btn btn-soft" for="import-file">가져오기</label>
               <input type="file" id="import-file" accept="application/json" hidden />
-              <button type="button" class="btn btn-danger" id="btn-reset">🗑️ 전체 삭제</button>
+              <button type="button" class="btn btn-danger" id="btn-reset">전체 삭제</button>
             </div>
             <p class="muted small">기록·메뉴는 본인 계정(Supabase)에 저장됩니다. 내보내기로 언제든 JSON 백업을 만들 수 있어요.</p>
           </div>
@@ -263,6 +264,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=4" defer></script>
+  <script src="app.js?v=5" defer></script>
 </body>
 </html>

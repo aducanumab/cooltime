@@ -862,11 +862,11 @@ function renderCooldownTab() {
 
   let html = '';
   if (ready.length) {
-    html += `<div class="group-title">✅ 지금 먹어도 OK</div>`;
+    html += `<div class="group-title">지금 먹어도 OK</div>`;
     html += ready.map(cdCard).join('');
   }
   if (waiting.length) {
-    html += `<div class="group-title">⏳ 쿨타임 중</div>`;
+    html += `<div class="group-title">쿨타임 중</div>`;
     html += waiting.map(cdCard).join('');
   }
   groups.innerHTML = html;
@@ -876,13 +876,13 @@ function cdCard(s) {
   const since = s.elapsed === 0 ? '오늘' : `${s.elapsed}일 전`;
   const isNew = newlyReady.has(s.menu.id);
   const status = s.available
-    ? `<span class="cd-status ready">먹어도 OK 🎉</span>`
+    ? `<span class="cd-status ready">먹어도 OK</span>`
     : `<span class="cd-status wait">${s.daysRemaining}일 남음</span>`;
   const meta = s.available
     ? `마지막: ${s.last.date} (${since}) · 쿨타임 ${s.menu.cooldownDays}일`
     : `마지막: ${s.last.date} (${since}) · 다음 가능일 <b>${ymd(s.nextDate)}</b>`;
   return `<div class="cd-card ${s.available ? 'ready' : ''}">
-    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${isNew ? '<span class="badge-new">🎉 새로 완료</span>' : ''}</span>${status}</div>
+    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${isNew ? '<span class="badge-new">새로 완료</span>' : ''}</span>${status}</div>
     <div class="cd-meta">${meta}</div>
     <div class="bar"><span style="width:${Math.round(s.progress * 100)}%"></span></div>
   </div>`;
