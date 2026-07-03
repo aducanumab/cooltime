@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#edece3" />
   <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="styles.css?v=5" />
+  <link rel="stylesheet" href="styles.css?v=6" />
 </head>
 <body>
   <div class="app">
@@ -95,11 +95,16 @@
           <p class="auth-links"><a href="#" data-goto="login">← 로그인으로</a></p>
         </div>
       </div>
+      <p class="auth-links"><a href="#" data-goto="preview">← 둘러보기로 돌아가기</a></p>
       <p class="auth-foot muted small">데이터는 본인 계정에만 저장되며, 행 단위 보안(RLS)으로 다른 사용자는 접근할 수 없습니다.</p>
     </section>
 
     <!-- ===================== 앱 본체 (로그인 상태) ===================== -->
     <div id="app-view" hidden>
+      <div id="preview-banner" hidden>
+        <span>데모 미리보기예요 — 로그인하면 내 기록을 남길 수 있어요.</span>
+        <button type="button" id="btn-preview-login">로그인 / 가입</button>
+      </div>
       <nav class="tabbar" id="tabbar">
         <button class="tab active" data-tab="record">기록</button>
         <button class="tab" data-tab="cooldown">쿨타임</button>
@@ -230,6 +235,13 @@
 
           <div class="card">
             <h2 class="card-title">계정</h2>
+            <div id="account-guest" hidden>
+              <p class="muted small">지금은 게스트로 둘러보는 중이에요. 로그인하면 기록이 저장되고 어느 기기에서든 볼 수 있어요.</p>
+              <div class="form-actions">
+                <button type="button" class="btn btn-primary" id="btn-guest-login">로그인 / 가입</button>
+              </div>
+            </div>
+            <div id="account-user">
             <p class="muted small">로그인: <b id="acc-email"></b></p>
             <div class="form-actions">
               <button type="button" class="btn btn-soft" id="btn-logout">로그아웃</button>
@@ -242,6 +254,7 @@
               <div class="form-actions">
                 <button type="button" class="btn btn-primary" id="btn-save-pw">비밀번호 저장</button>
               </div>
+            </div>
             </div>
           </div>
 
@@ -264,6 +277,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=2"></script>
-  <script src="app.js?v=5" defer></script>
+  <script src="app.js?v=6" defer></script>
 </body>
 </html>

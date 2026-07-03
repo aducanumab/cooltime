@@ -571,9 +571,55 @@ function authMsg(err) {
   return m || '알 수 없는 오류가 발생했어요.';
 }
 
+/* ---------- 미리보기(게스트) 모드 ---------- */
+let guestMode = false;
+
+function togglePreviewBanner(show) {
+  const b = $('#preview-banner');
+  if (b) b.hidden = !show;
+}
+
+// 데모 데이터 (오늘 기준 상대 날짜 → '먹어도 OK'와 'N일 남음' 둘 다 보이게)
+function seedDemo() {
+  const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return ymd(d); };
+  const demo = [
+    { name: '떡볶이', cd: 30, ago: 5 },
+    { name: '삼겹살', cd: 7, ago: 10 },
+    { name: '라면', cd: 14, ago: 0 },
+    { name: '치킨', cd: 10, ago: 13 },
+  ];
+  menus = []; records = [];
+  demo.forEach((d, i) => {
+    const id = 'demo-' + i;
+    menus.push({ id, name: d.name, cooldownDays: d.cd, createdAt: i });
+    records.push({ id: 'demo-r-' + i, menuId: id, name: d.name, date: daysAgo(d.ago), note: '', nutrition: null, createdAt: i });
+  });
+}
+
+function enterPreview() {
+  guestMode = true;
+  currentUser = null;
+  profile = null;
+  loadedForUser = null;
+  newlyReady = new Set();
+  seedDemo();
+  renderAll();
+  setGate(true);
+  togglePreviewBanner(true);
+}
+
+function requireAuth(msg) {
+  toast(msg || '로그인하면 저장할 수 있어요');
+  setGate(false);
+  togglePreviewBanner(false);
+  showAuthScreen('signup');
+}
+
 async function enterApp(session) {
   if (!session) return;
   if (loadedForUser === session.user.id) { setGate(true); return; }
+  guestMode = false;
+  togglePreviewBanner(false);
   currentUser = session.user;
   try {
     await store.loadAll();
@@ -590,12 +636,8 @@ async function enterApp(session) {
 }
 
 function leaveApp() {
-  currentUser = null; profile = null;
-  menus = []; records = [];
-  newlyReady = new Set();
-  loadedForUser = null;
-  setGate(false);
-  showAuthScreen('login');
+  // 로그아웃/세션 없음 → 로그인 벽 대신 미리보기로
+  enterPreview();
 }
 
 function initAuth() {
@@ -620,7 +662,14 @@ function initAuthUI() {
     const goto = e.target.closest('[data-goto]')?.dataset.goto;
     if (!goto) return;
     e.preventDefault();
+    if (goto === 'preview') { enterPreview(); return; }
     showAuthScreen(goto);
+  });
+
+  // 미리보기 배너 / 게스트 계정 → 로그인 화면
+  ['#btn-preview-login', '#btn-guest-login'].forEach((sel) => {
+    const el = $(sel);
+    if (el) el.addEventListener('click', () => { setGate(false); togglePreviewBanner(false); showAuthScreen('login'); });
   });
 
   // 로그인
@@ -909,6 +958,9 @@ function renderManageTab() {
   $('#set-provider').value = llm.provider;
   $('#set-recognizer').value = llm.recognizer;
   $('#acc-email').textContent = currentUser ? currentUser.email : '';
+  const au = $('#account-user'), ag = $('#account-guest');
+  if (au) au.hidden = guestMode;
+  if (ag) ag.hidden = !guestMode;
   renderProviderConfig();
   renderRecognizerConfig();
 }
@@ -986,6 +1038,7 @@ function initRecordForm() {
   // 저장 (클라우드)
   $('#record-form').addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (guestMode) { requireAuth('가입하면 이 기록을 저장할 수 있어요'); return; }
     const name = $('#f-name').value.trim();
     const date = $('#f-date').value || todayStr();
     const note = $('#f-note').value.trim();
@@ -1017,6 +1070,7 @@ function initRecordForm() {
   $('#recent-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-record]')?.dataset.delRecord;
     if (!id) return;
+    if (guestMode) { requireAuth(); return; }
     try {
       await store.deleteRecord(id);
       renderAll();
@@ -1122,6 +1176,7 @@ function initManage() {
   $('#menu-list').addEventListener('change', async (e) => {
     const id = e.target.dataset.menuCd;
     if (!id) return;
+    if (guestMode) { requireAuth(); return; }
     const days = Math.max(0, parseInt(e.target.value, 10) || 0);
     try {
       await store.updateMenuCooldown(id, days);
@@ -1135,6 +1190,7 @@ function initManage() {
   $('#menu-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-menu]')?.dataset.delMenu;
     if (!id) return;
+    if (guestMode) { requireAuth(); return; }
     const m = getMenu(id);
     const cnt = records.filter((r) => r.menuId === id).length;
     if (!confirm(`"${m?.name}" 메뉴와 관련 기록 ${cnt}개를 삭제할까요?`)) return;
@@ -1148,6 +1204,7 @@ function initManage() {
 
   // 기본 쿨타임 (계정 프로필에 저장)
   $('#set-default-cooldown').addEventListener('change', async (e) => {
+    if (guestMode) { requireAuth(); return; }
     const v = Math.max(0, parseInt(e.target.value, 10) || 0);
     try {
       await store.updateProfile({ default_cooldown_days: v });
@@ -1196,6 +1253,7 @@ function initManage() {
 
   // 데이터 가져오기 (계정으로 삽입)
   $('#import-file').addEventListener('change', (e) => {
+    if (guestMode) { requireAuth(); e.target.value = ''; return; }
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
@@ -1214,6 +1272,7 @@ function initManage() {
 
   // 전체 삭제 (계정 데이터)
   $('#btn-reset').addEventListener('click', async () => {
+    if (guestMode) { requireAuth(); return; }
     if (!confirm('모든 기록과 메뉴를 삭제할까요? 되돌릴 수 없습니다.')) return;
     try {
       await store.deleteAllData();

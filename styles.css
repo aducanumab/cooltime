@@ -58,6 +58,21 @@ html, body {
 }
 .subtitle { margin: 4px 0 0; color: var(--muted); font-size: 0.82rem; }
 
+/* ---------- 미리보기 배너 ---------- */
+#preview-banner {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  margin: 8px 14px 2px; padding: 9px 12px;
+  background: var(--accent-bg); color: var(--accent-d);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font-size: 0.82rem; line-height: 1.4;
+}
+#preview-banner button {
+  border: none; background: var(--accent); color: #fff; font-family: inherit;
+  font-size: 0.8rem; font-weight: 500; padding: 6px 12px; border-radius: 7px;
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+#preview-banner button:hover { background: var(--accent-d); }
+
 /* ---------- Tabs ---------- */
 .tabbar {
   position: sticky;
@@ -299,5 +314,6 @@ code { background: var(--card-2); border-radius: 6px; padding: 1px 6px; font-siz
     --danger-bg: #35211e;
   }
   .btn-primary { color: #1a1a15; }
+  #preview-banner button { color: #1a1a15; }
   .photo-cands .cand:hover { background: #343c29; }
 }
