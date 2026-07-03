@@ -473,9 +473,12 @@ const RECOGNIZERS = {
     label: '자동 인식 (서비스 제공)', needsKey: false,
     async recognize(dataUrl) {
       if (!currentUser) throw new Error('로그인하면 사진 자동 인식을 쓸 수 있어요.');
-      const { data, error } = await sb.functions.invoke('recognize', { body: { image: dataUrl } });
+      const fn = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_FUNCTION) || 'recognize';
+      const { data, error } = await sb.functions.invoke(fn, { body: { image: dataUrl } });
       if (error) {
-        throw new Error('인식 서버 오류: ' + (error.message || error) + ' (관리자: recognize 함수·시크릿 확인)');
+        let detail = error.message || String(error);
+        try { const b = await error.context.json(); if (b && b.error) detail = b.error; } catch (_) {}
+        throw new Error('인식 실패: ' + detail);
       }
       if (data && data.error) throw new Error(data.error);
       return normalizeRecognition({ name: data && data.name, candidates: data && data.candidates });

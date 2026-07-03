@@ -9,4 +9,6 @@
 window.COOLTIME_CONFIG = {
   SUPABASE_URL: 'https://rrrixxscevoaifckicrs.supabase.co',
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJycml4eHNjZXZvYWlmY2tpY3JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4ODgxMjEsImV4cCI6MjA5ODQ2NDEyMX0.hobVCO1v7UePFt350X0OQQ_m_nL-hnNK4aA43vlZiBw',
+  // 사진 자동 인식 Edge Function 이름 (대시보드에서 배포한 함수명과 일치해야 함)
+  RECOGNIZE_FUNCTION: 'dynamic-service',
 };
