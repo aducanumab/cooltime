@@ -279,6 +279,13 @@ code { background: var(--card-2); border-radius: 6px; padding: 1px 6px; font-siz
 }
 .photo-cands .cand:hover { background: #dfe6cf; }
 
+/* ---------- 예시(데모) 배지 ---------- */
+.badge-demo {
+  background: var(--warn-bg); color: var(--warn-d);
+  font-size: 0.7rem; font-weight: 600; border-radius: 7px;
+  padding: 2px 7px; margin-left: 7px; vertical-align: 1px; white-space: nowrap;
+}
+
 /* ---------- 새로 완료 배지 / 탭 알림 점 ---------- */
 .badge-new {
   background: var(--ok-bg); color: var(--ok-d);

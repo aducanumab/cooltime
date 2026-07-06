@@ -619,22 +619,14 @@ function togglePreviewBanner(show) {
   if (b) b.hidden = !show;
 }
 
-// 데모 데이터 (오늘 기준 상대 날짜 → '먹어도 OK'와 'N일 남음' 둘 다 보이게)
+// 데모 데이터: 떡볶이 1건만 (기록→쿨타임→관리 세 탭이 같은 배열을 그리므로 자동 sync)
 function seedDemo() {
   const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return ymd(d); };
-  const demo = [
-    { name: '떡볶이', cd: 30, ago: 5 },
-    { name: '삼겹살', cd: 7, ago: 10 },
-    { name: '라면', cd: 14, ago: 0 },
-    { name: '치킨', cd: 10, ago: 13 },
-  ];
-  menus = []; records = [];
-  demo.forEach((d, i) => {
-    const id = 'demo-' + i;
-    menus.push({ id, name: d.name, cooldownDays: d.cd, createdAt: i });
-    records.push({ id: 'demo-r-' + i, menuId: id, name: d.name, date: daysAgo(d.ago), note: '', nutrition: null, createdAt: i });
-  });
+  menus = [{ id: 'demo-0', name: '떡볶이', cooldownDays: 30, createdAt: 0 }];
+  records = [{ id: 'demo-r-0', menuId: 'demo-0', name: '떡볶이', date: daysAgo(5), note: '이건 예시 기록이에요. 로그인하면 내 기록으로 시작합니다.', nutrition: null, createdAt: 0 }];
 }
+// 게스트 미리보기에서 항목 옆에 붙는 '예시' 배지
+function demoBadge() { return guestMode ? '<span class="badge-demo">예시</span>' : ''; }
 
 function enterPreview() {
   guestMode = true;
@@ -934,7 +926,7 @@ function renderRecordTab() {
     const nutri = n ? ` · ${n.calories}kcal` : '';
     return `<li class="record-item">
       <div class="ri-main">
-        <div class="ri-name">${escapeHtml(r.name)}</div>
+        <div class="ri-name">${escapeHtml(r.name)}${demoBadge()}</div>
         <div class="ri-meta">${r.date}${nutri}</div>
         ${r.note ? `<div class="ri-note">${escapeHtml(r.note)}</div>` : ''}
       </div>
@@ -981,7 +973,7 @@ function cdCard(s) {
     ? `마지막: ${s.last.date} (${since}) · 쿨타임 ${s.menu.cooldownDays}일`
     : `마지막: ${s.last.date} (${since}) · 다음 가능일 <b>${ymd(s.nextDate)}</b>`;
   return `<div class="cd-card ${s.available ? 'ready' : ''}">
-    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${isNew ? '<span class="badge-new">새로 완료</span>' : ''}</span>${status}</div>
+    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${demoBadge()}${isNew ? '<span class="badge-new">새로 완료</span>' : ''}</span>${status}</div>
     <div class="cd-meta">${meta}</div>
     <div class="bar"><span style="width:${Math.round(s.progress * 100)}%"></span></div>
   </div>`;
@@ -996,7 +988,7 @@ function renderManageTab() {
     list.innerHTML = sorted.map((m) => {
       const cnt = records.filter((r) => r.menuId === m.id).length;
       return `<li class="menu-item">
-        <span class="mi-name">${escapeHtml(m.name)} <span class="muted small">(${cnt}회)</span></span>
+        <span class="mi-name">${escapeHtml(m.name)}${demoBadge()} <span class="muted small">(${cnt}회)</span></span>
         <input class="mi-cooldown" type="number" min="0" step="1" value="${m.cooldownDays}" data-menu-cd="${m.id}" />
         <span class="mi-unit">일</span>
         <button class="icon-btn" data-del-menu="${m.id}" title="메뉴 삭제">✕</button>
