@@ -19,11 +19,11 @@ const CORS = {
 };
 
 const RECOGNIZE_SYS =
-  '위 이미지에 실제로 보이는 음식이 무엇인지 판별하고, 그 음식의 이름을 한국어로 답하라. ' +
-  '출력은 JSON 객체 하나뿐이어야 하며 형식은 {"candidates": [ ... ]} 이다. ' +
-  '배열에는 이미지에 보이는 음식 이름만 문자열로 넣는다(최대 4개, 가능성 높은 순). ' +
-  '이미지에 없는 음식 이름, 자리표시자, 설명 문장, 마크다운은 절대 넣지 않는다. ' +
-  '음식이 안 보이면 {"candidates": []} 를 출력한다.';
+  '이미지에 보이는 음식이 무엇인지 판별하라. ' +
+  '너의 전체 출력은 유효한 JSON 객체 하나여야 한다. 키는 candidates 하나뿐이고, ' +
+  '값은 이미지에 실제로 보이는 음식의 한국어 이름 문자열 배열이다(최대 4개, 가능성 높은 순). ' +
+  '분석 과정, 설명 문장, 불릿, 마크다운, 영어 서술은 출력하지 마라. 출력의 첫 글자는 여는 중괄호여야 한다. ' +
+  '음식이 안 보이면 candidates를 빈 배열로 하라.';
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -82,9 +82,8 @@ Deno.serve(async (req) => {
     if (!key) return json({ error: '서버에 GEMINI_API_KEY가 설정되지 않았습니다.' }, 500);
     const model = Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it';
 
-    const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-      {
+    const call = (generationConfig: Record<string, unknown>) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
@@ -94,10 +93,15 @@ Deno.serve(async (req) => {
               { text: RECOGNIZE_SYS },
             ],
           }],
-          generationConfig: { temperature: 0.1, maxOutputTokens: 200 },
+          generationConfig,
         }),
-      },
-    );
+      });
+
+    // 1차: JSON 강제 모드 → 모델이 미지원(400)이면 일반 모드로 폴백
+    let r = await call({ temperature: 0, maxOutputTokens: 512, response_mime_type: 'application/json' });
+    if (r.status === 400) {
+      r = await call({ temperature: 0, maxOutputTokens: 512 });
+    }
     if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
 
     const d = await r.json();
@@ -105,8 +109,8 @@ Deno.serve(async (req) => {
     const parsed = extractJson(text);
     const candidates = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
       .map((c: unknown) => String(c).trim())
-      .filter(Boolean)
-      .filter((c: string) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 자리표시자 에코 방어
+      .filter((c: string) => /[가-힣A-Za-z]/.test(c)) // 글자 없는 자리표시자("...") 제거
+      .filter((c: string) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 예시 에코 방어
       .slice(0, 4);
 
     // raw: 모델 원문 일부(디버깅용 — 클라이언트는 무시해도 됨)
