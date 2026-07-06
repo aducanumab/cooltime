@@ -121,6 +121,10 @@ html, body {
 .field-label { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
 .row { display: flex; gap: 10px; }
 .row .field { flex: 1; min-width: 0; } /* iOS: date 입력 고유폭이 옆 칸을 침범하지 않도록 */
+/* 모바일: 날짜·쿨타임을 세로로 쌓아 iOS date 입력 겹침을 원천 차단 */
+@media (max-width: 500px) {
+  .row { flex-direction: column; gap: 13px; }
+}
 
 input, textarea, select {
   width: 100%;
