@@ -230,11 +230,22 @@ const NUTRITION_SYS =
   '모르면 합리적 추정치를 써라. JSON 외의 어떤 텍스트도 출력하지 마라.';
 const nutritionUserMsg = (name) => `음식: ${name}`;
 
+// 첫 번째 '완전한' JSON 객체만 추출 (모델이 JSON 뒤에 군더더기를 붙여도 안전)
 function extractJson(text) {
   if (!text) throw new Error('빈 응답');
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('JSON을 찾지 못함: ' + text.slice(0, 120));
-  return JSON.parse(m[0]);
+  const start = text.indexOf('{');
+  if (start < 0) throw new Error('JSON을 찾지 못함: ' + text.slice(0, 120));
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { if (inStr) esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return JSON.parse(text.slice(start, i + 1)); }
+  }
+  throw new Error('JSON을 찾지 못함: ' + text.slice(0, 120));
 }
 function normalizeNutrition(o) {
   const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);

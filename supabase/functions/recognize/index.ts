@@ -31,11 +31,22 @@ function json(body: unknown, status = 200) {
   });
 }
 
+// 첫 번째 '완전한' JSON 객체만 추출 (Gemma가 JSON 뒤에 군더더기를 붙여도 안전)
 function extractJson(text: string): any {
   if (!text) throw new Error('빈 응답');
-  const m = text.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error('JSON 없음');
-  return JSON.parse(m[0]);
+  const start = text.indexOf('{');
+  if (start < 0) throw new Error('JSON 없음');
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
+    if (esc) { esc = false; continue; }
+    if (ch === '\\') { if (inStr) esc = true; continue; }
+    if (ch === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (ch === '{') depth++;
+    else if (ch === '}') { depth--; if (depth === 0) return JSON.parse(text.slice(start, i + 1)); }
+  }
+  throw new Error('JSON 없음');
 }
 
 // dataURL → { mimeType, base64 }
@@ -82,6 +93,7 @@ Deno.serve(async (req) => {
               { inline_data: { mime_type: mimeType, data: base64 } },
             ],
           }],
+          generationConfig: { temperature: 0.1, maxOutputTokens: 200 },
         }),
       },
     );
