@@ -9,6 +9,7 @@
 //        GEMINI_MODEL   = gemma-4-31b-it     (선택, 클라이언트가 model 미지정 시 기본값)
 //  * 클라이언트가 body.model 로 모델을 지정할 수 있고(안전목록: gemma-4*, gemini-*-flash),
 //    모델 폴백(오류 시 다음 모델 전환)은 클라이언트가 순차 호출로 오케스트레이션한다.
+//  * gemini-2.5 계열은 thinkingBudget:0 으로 'thinking'을 꺼 출력 잘림을 막는다(gemma엔 보내면 400이라 미전송).
 //  * 로그인한 사용자만 호출 가능(getUser 검증). SUPABASE_URL / SUPABASE_ANON_KEY 는
 //    플랫폼이 자동 주입하는 환경변수라 별도 설정 불필요.
 // ============================================================
@@ -61,18 +62,21 @@ function splitDataUrl(dataUrl: string) {
 
 // 서술형 답변에서 '완성된 한 문장'만 추출 (Gemma가 앞에 영어 사고과정을 붙일 때 대비)
 function pickSentence(text: string): string {
-  const t = (text || '').replace(/\r/g, '');
-  // 1) 줄 단위: 불릿·번호·영어 라벨 제외
+  // 앞머리에 붙은 JSON 껍데기('{ "note": "' 등)를 먼저 벗겨낸다(한글 서술은 영향 없음)
+  const t = (text || '').replace(/\r/g, '').replace(/^\s*\{?\s*"?[\w-]+"?\s*:\s*"?/, '');
+  const notJson = (l: string) => !/^[{}[\]]/.test(l) && !/^"?[\w-]+"?\s*:/.test(l); // JSON 줄 배제
+  // 1) 줄 단위: 불릿·번호·영어 라벨·JSON 조각 제외
   const lines = t.split(/\n+/).map((s) => s.trim())
     .filter((l) =>
       /[가-힣]/.test(l) && l.length >= 8
       && !/^[-*#>]|^\d+[.)]/.test(l)
-      && !/^[A-Za-z][A-Za-z ]*:/.test(l));
+      && !/^[A-Za-z][A-Za-z ]*:/.test(l)
+      && notJson(l));
   let best = lines.find((l) => /kcal|칼로리|열량/i.test(l)) || lines[lines.length - 1];
   // 2) 줄에서 못 찾으면 전체를 문장 단위로 쪼개서 탐색
   if (!best) {
     const sents = t.split(/(?<=[.!?。])\s+|\n+/).map((s) => s.trim())
-      .filter((s) => /[가-힣]/.test(s) && s.length >= 8);
+      .filter((s) => /[가-힣]/.test(s) && s.length >= 8 && notJson(s));
     best = sents.find((s) => /kcal|칼로리|열량/i.test(s)) || sents[sents.length - 1];
   }
   best = best || '';
@@ -80,7 +84,12 @@ function pickSentence(text: string): string {
     const sents = best.split(/(?<=[.!?。])\s+/);
     best = sents.find((s) => /kcal|칼로리|열량/i.test(s)) || sents[0] || best;
   }
-  return best.replace(/^["'*\-\s]+/, '').replace(/["'*\s]+$/, '').slice(0, 200);
+  return best.replace(/^["'*\-\s{]+/, '').replace(/["'*\s}]+$/, '').slice(0, 200);
+}
+
+// 문자열이 JSON 잔재('{...' 또는 '"note":...')처럼 보이면 true → note로 내보내지 않는다
+function looksJson(s: string): boolean {
+  return /^\s*[{[]/.test(s) || /^\s*"?note"?\s*:/.test(s);
 }
 
 Deno.serve(async (req) => {
@@ -106,6 +115,10 @@ Deno.serve(async (req) => {
     // 클라이언트가 지정한 모델은 안전 목록(gemma-4*, gemini-*-flash)일 때만 허용 (비싼 모델 남용 방지)
     const allowed = (m: unknown): m is string => typeof m === 'string' && /^gemma-4|^gemini-[0-9.]+-flash/.test(m);
     const model = allowed(reqModel) ? reqModel : (Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it');
+    // gemini-2.5 계열은 기본 'thinking'이 켜져 있어 maxOutputTokens를 사고에 소진 → 짧은 출력이 중간에 잘린다.
+    //   thinkingBudget:0으로 끄면 토큰 전부가 실제 출력에 쓰인다.
+    //   ※ gemma-* / gemini-2.0-* 에 이 필드를 보내면 400(요청 전체 거부)이므로 2.5에만 보낸다.
+    const thinkOff = /^gemini-2\.5/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {};
 
     const genText = (prompt: string, cfg: Record<string, unknown> = {}) =>
       fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -113,7 +126,7 @@ Deno.serve(async (req) => {
         headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
           contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 1024, ...cfg },
+          generationConfig: { temperature: 0.3, maxOutputTokens: 1024, ...cfg, ...thinkOff },
         }),
       });
 
@@ -127,7 +140,7 @@ Deno.serve(async (req) => {
         `예시: {"note":"1인분 약 500kcal, 간장과 기름에 조린 헤비한 음식으로 2달에 한 번 권장."}`;
       const jsonCfg = {
         temperature: 0.2,
-        maxOutputTokens: 512,
+        maxOutputTokens: 1024, // thinking 꺼도(thinkOff) 한 문장엔 넉넉 — 잘림 방지 여유
         responseMimeType: 'application/json',
         responseSchema: { type: 'OBJECT', properties: { note: { type: 'STRING' } }, required: ['note'] },
       };
@@ -136,10 +149,21 @@ Deno.serve(async (req) => {
       if (r.status === 400) r = await genText(prompt, { maxOutputTokens: 3072 });
       if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300), model }, 502);
       const d = await r.json();
-      const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+      const cand0 = d?.candidates?.[0];
+      const raw = cand0?.content?.parts?.[0]?.text ?? '';
+      // 출력이 잘렸으면(MAX_TOKENS) 조각을 note로 쓰지 않는다 → 빈 note로 두면 클라이언트가 다음 모델로 폴백
+      const truncated = cand0?.finishReason === 'MAX_TOKENS';
       let note = '';
-      try { note = String(extractJson(raw).note ?? '').trim(); } catch { note = pickSentence(raw); }
-      if (!note) note = pickSentence(raw); // JSON.note가 비면 원문에서 재추출
+      if (!truncated) {
+        try {
+          note = String(extractJson(raw).note ?? '').trim();
+        } catch {
+          // 완결 JSON이 아니면 부분 "note":"..." 라도 복구(닫는 따옴표 없어도 됨) → 그래도 없으면 문장 추출
+          const m = /"note"\s*:\s*"((?:[^"\\]|\\.)*)"?/.exec(raw);
+          note = m ? m[1].replace(/\\"/g, '"').replace(/\\n/g, ' ').trim() : pickSentence(raw);
+        }
+      }
+      if (looksJson(note)) note = ''; // JSON 잔재가 새어나오면 폐기(클라이언트 폴백 유도)
       return json({ note, model, raw: raw.slice(0, 400) }, 200);
     }
 
@@ -152,7 +176,7 @@ Deno.serve(async (req) => {
           headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
           body: JSON.stringify({
             contents: [{ parts: [{ text: textQuery }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 512 },
+            generationConfig: { temperature: 0.2, maxOutputTokens: 512, ...thinkOff },
           }),
         },
       );
@@ -175,7 +199,7 @@ Deno.serve(async (req) => {
               { text: RECOGNIZE_SYS },
             ],
           }],
-          generationConfig,
+          generationConfig: { ...generationConfig, ...thinkOff }, // gemini-2.5면 thinking off(후보 JSON 잘림 방지)
         }),
       });
 
@@ -201,7 +225,7 @@ Deno.serve(async (req) => {
     const clean = (s: string) => s
       .replace(/^\s*[-*\d.)\s]+/, '')     // 앞 번호·불릿
       .replace(/\s*\([^)]*\)\s*/g, '')    // (Tteokbokki) 같은 괄호 병기
-      .replace(/[*#`_\[\]"'‘’“”]/g, '') // 마크다운·따옴표
+      .replace(/[*#`_\[\]{}"'‘’“”]/g, '') // 마크다운·따옴표·중괄호
       .trim();
     const candidates = list
       .map(clean)
