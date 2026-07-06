@@ -1038,6 +1038,9 @@ function initTabs() {
   });
 }
 
+// AI 서비스(서버 Gemma) 무응답·실패 시 사용자 안내 문구
+const AI_UNAVAILABLE = '현재 AI 서비스가 원활하지 않습니다. 잠시 후 다시 시도해주세요.';
+
 function initRecordForm() {
   $('#f-date').value = todayStr();
 
@@ -1064,11 +1067,13 @@ function initRecordForm() {
         throw new Error(detail);
       }
       if (data && data.error) throw new Error(data.error);
-      $('#f-note').value = (data && data.note) ? data.note : '';
       hint.textContent = '';
+      if (!data || !data.note) { toast(AI_UNAVAILABLE); return; } // 서버는 응답했으나 유효한 문장 없음
+      $('#f-note').value = data.note;
     } catch (err) {
       hint.textContent = '';
-      toast('영양정보 실패: ' + (err.message || err));
+      console.warn('AI 영양정보 실패:', err);
+      toast(AI_UNAVAILABLE);
     } finally {
       btn.disabled = false;
     }
@@ -1134,16 +1139,24 @@ function initRecordForm() {
     $('#photo-box').hidden = false;
     hint.textContent = '이미지 준비 중…';
     try {
-      const dataUrl = await fileToResizedDataUrl(file);
+      let dataUrl;
+      try {
+        dataUrl = await fileToResizedDataUrl(file); // 클라이언트 이미지 처리
+      } catch (imgErr) {
+        hint.textContent = '';
+        toast('사진을 불러오지 못했어요. 다른 사진으로 시도해 주세요.');
+        return;
+      }
       showPhotoPreview(dataUrl);
       const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.mock;
       hint.textContent = `인식 중… (${rec.label})`;
-      const r = await recognizeMenu(dataUrl);
+      const r = await recognizeMenu(dataUrl); // 서버 AI 호출
       hint.textContent = '';
       handleRecognition(r);
     } catch (err) {
       hint.textContent = '';
-      toast('사진 인식 실패: ' + (err.message || err));
+      console.warn('사진 인식 실패:', err);
+      toast(AI_UNAVAILABLE);
     } finally {
       btn.disabled = false;
     }
