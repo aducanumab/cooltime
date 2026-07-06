@@ -6,7 +6,9 @@
 //        * 함수 이름은 config.js 의 RECOGNIZE_FUNCTION 값과 일치해야 함 (현재 dynamic-service)
 //  시크릿: Edge Functions > Secrets 에 아래 추가
 //        GEMINI_API_KEY = AIza...            (필수, Google AI Studio 키 — 브라우저에 안 감)
-//        GEMINI_MODEL   = gemma-4-31b-it     (선택, 기본값 동일)
+//        GEMINI_MODEL   = gemma-4-31b-it     (선택, 클라이언트가 model 미지정 시 기본값)
+//  * 클라이언트가 body.model 로 모델을 지정할 수 있고(안전목록: gemma-4*, gemini-*-flash),
+//    모델 폴백(오류 시 다음 모델 전환)은 클라이언트가 순차 호출로 오케스트레이션한다.
 //  * 로그인한 사용자만 호출 가능(getUser 검증). SUPABASE_URL / SUPABASE_ANON_KEY 는
 //    플랫폼이 자동 주입하는 환경변수라 별도 설정 불필요.
 // ============================================================
@@ -97,11 +99,13 @@ Deno.serve(async (req) => {
     if (!user) return json({ error: '로그인이 필요합니다.' }, 401);
 
     // 2) 입력 수신 (image: 사진 인식 / menu: 영양정보 / text: 연결 헬스체크)
-    const { image, text: textQuery, menu } = await req.json().catch(() => ({}));
+    const { image, text: textQuery, menu, model: reqModel } = await req.json().catch(() => ({}));
 
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json({ error: '서버에 GEMINI_API_KEY가 설정되지 않았습니다.' }, 500);
-    const model = Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it';
+    // 클라이언트가 지정한 모델은 안전 목록(gemma-4*, gemini-*-flash)일 때만 허용 (비싼 모델 남용 방지)
+    const allowed = (m: unknown): m is string => typeof m === 'string' && /^gemma-4|^gemini-[0-9.]+-flash/.test(m);
+    const model = allowed(reqModel) ? reqModel : (Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it');
 
     const genText = (prompt: string, cfg: Record<string, unknown> = {}) =>
       fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
@@ -127,21 +131,16 @@ Deno.serve(async (req) => {
         responseMimeType: 'application/json',
         responseSchema: { type: 'OBJECT', properties: { note: { type: 'STRING' } }, required: ['note'] },
       };
-      let r: Response | undefined;
-      for (let attempt = 0; attempt < 3; attempt++) {
-        r = await genText(prompt, jsonCfg);
-        if (r.ok) break;
-        if (r.status === 400) { r = await genText(prompt, { maxOutputTokens: 3072 }); break; } // 스키마 미지원 → 일반 모드
-        if (r.status === 429 || r.status === 500 || r.status === 503) { await new Promise((s) => setTimeout(s, 800)); continue; }
-        break;
-      }
-      if (!r || !r.ok) return json({ error: `gemini ${r ? r.status : 0}`, detail: r ? (await r.text()).slice(0, 300) : '' }, 502);
+      // 모델당 빠르게 시도(모델 폴백은 클라이언트가 오케스트레이션). 스키마 미지원(400)만 일반 모드로.
+      let r = await genText(prompt, jsonCfg);
+      if (r.status === 400) r = await genText(prompt, { maxOutputTokens: 3072 });
+      if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300), model }, 502);
       const d = await r.json();
       const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
       let note = '';
       try { note = String(extractJson(raw).note ?? '').trim(); } catch { note = pickSentence(raw); }
       if (!note) note = pickSentence(raw); // JSON.note가 비면 원문에서 재추출
-      return json({ note, raw: raw.slice(0, 400) }, 200);
+      return json({ note, model, raw: raw.slice(0, 400) }, 200);
     }
 
     // 2-b) 텍스트 질의 모드: 모델 연결 점검용 (원문 그대로 반환)
@@ -180,16 +179,10 @@ Deno.serve(async (req) => {
         }),
       });
 
-    // 1차: JSON 강제 모드(camelCase!) → 미지원(400)이면 일반 모드로 폴백
-    // Gemma는 사고과정을 길게 쓰므로 토큰을 넉넉히 줘서 뒤쪽 JSON까지 도달하게 함
+    // JSON 강제 모드(camelCase) → 미지원(400)이면 일반 모드. 모델 폴백은 클라이언트가 처리하므로 여기선 빠르게 실패.
     let r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
-    if (r.status === 400) {
-      r = await call({ temperature: 0, maxOutputTokens: 1024 });
-    } else if (r.status === 429 || r.status === 500 || r.status === 503) {
-      await new Promise((s) => setTimeout(s, 800)); // 과부하 일시적 오류 1회 재시도
-      r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
-    }
-    if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
+    if (r.status === 400) r = await call({ temperature: 0, maxOutputTokens: 1024 });
+    if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300), model }, 502);
 
     const d = await r.json();
     const text = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
@@ -219,7 +212,7 @@ Deno.serve(async (req) => {
       .slice(0, 4);
 
     // 파싱 실패해도 200 + raw 로 진단 가능하게 (500 던지지 않음)
-    return json({ candidates, name: candidates[0] ?? '', raw: text.slice(0, 300) }, 200);
+    return json({ candidates, name: candidates[0] ?? '', model, raw: text.slice(0, 300) }, 200);
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }

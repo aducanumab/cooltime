@@ -456,21 +456,38 @@ function loadTesseract() {
   return _tessLoading;
 }
 
+// 모델 폴백 체인으로 서버 AI 함수 호출. 앞 모델이 실패하면 다음 모델로 전환(전환 시 안내).
+async function callAiWithFallback(body, isSuccess) {
+  const fn = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_FUNCTION) || 'recognize';
+  const models = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_MODELS) || ['gemma-4-31b-it'];
+  let lastErr = 'AI 응답 없음';
+  for (let i = 0; i < models.length; i++) {
+    if (i > 0) toast('첫번째 모델에 오류가 있어서, 다른 모델로 재시도 중입니다.');
+    try {
+      const { data, error } = await sb.functions.invoke(fn, { body: Object.assign({}, body, { model: models[i] }) });
+      if (error) {
+        lastErr = error.message || String(error);
+        try { const b = await error.context.json(); if (b && b.error) lastErr = b.error; } catch (_) {}
+        continue; // 다음 모델로
+      }
+      if (data && data.error) { lastErr = data.error; continue; }
+      if (isSuccess(data)) return data;
+      lastErr = '결과 없음'; // 유효 응답이나 쓸 결과 없음 → 다음 모델
+    } catch (e) {
+      lastErr = (e && e.message) || String(e);
+    }
+  }
+  throw new Error(lastErr);
+}
+
 const RECOGNIZERS = {
-  /* ---- 서비스 내장: 관리자 키를 쓰는 Supabase Edge Function 프록시 (키 노출 없음) ---- */
+  /* ---- 서비스 내장: 관리자 키를 쓰는 Supabase Edge Function 프록시 (키 노출 없음, 모델 폴백) ---- */
   builtin: {
     label: '자동 인식 (서비스 제공)', needsKey: false,
     async recognize(dataUrl) {
       if (!currentUser) throw new Error('로그인하면 사진 자동 인식을 쓸 수 있어요.');
-      const fn = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_FUNCTION) || 'recognize';
-      const { data, error } = await sb.functions.invoke(fn, { body: { image: dataUrl } });
-      if (error) {
-        let detail = error.message || String(error);
-        try { const b = await error.context.json(); if (b && b.error) detail = b.error; } catch (_) {}
-        throw new Error('인식 실패: ' + detail);
-      }
-      if (data && data.error) throw new Error(data.error);
-      return normalizeRecognition({ name: data && data.name, candidates: data && data.candidates });
+      const data = await callAiWithFallback({ image: dataUrl }, (d) => !!d); // 응답만 오면 성공(빈 후보는 '음식 없음')
+      return normalizeRecognition({ name: data.name, candidates: data.candidates });
     },
   },
 
@@ -1059,16 +1076,8 @@ function initRecordForm() {
     btn.disabled = true;
     hint.textContent = '영양정보 분석 중…';
     try {
-      const fn = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_FUNCTION) || 'recognize';
-      const { data, error } = await sb.functions.invoke(fn, { body: { menu: name } });
-      if (error) {
-        let detail = error.message || String(error);
-        try { const b = await error.context.json(); if (b && b.error) detail = b.error; } catch (_) {}
-        throw new Error(detail);
-      }
-      if (data && data.error) throw new Error(data.error);
+      const data = await callAiWithFallback({ menu: name }, (d) => !!(d && d.note));
       hint.textContent = '';
-      if (!data || !data.note) { toast(AI_UNAVAILABLE); return; } // 서버는 응답했으나 유효한 문장 없음
       $('#f-note').value = data.note;
     } catch (err) {
       hint.textContent = '';

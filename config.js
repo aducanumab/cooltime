@@ -11,4 +11,6 @@ window.COOLTIME_CONFIG = {
   SUPABASE_ANON_KEY: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJycml4eHNjZXZvYWlmY2tpY3JzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODI4ODgxMjEsImV4cCI6MjA5ODQ2NDEyMX0.hobVCO1v7UePFt350X0OQQ_m_nL-hnNK4aA43vlZiBw',
   // 사진 자동 인식 Edge Function 이름 (대시보드에서 배포한 함수명과 일치해야 함)
   RECOGNIZE_FUNCTION: 'dynamic-service',
+  // AI 모델 폴백 순서 — 앞 모델이 실패하면 다음 모델로 재시도(전환 시 안내). 안전목록: gemma-4*, gemini-*-flash
+  RECOGNIZE_MODELS: ['gemma-4-31b-it', 'gemma-4-26b-a4b-it', 'gemini-2.5-flash'],
 };
