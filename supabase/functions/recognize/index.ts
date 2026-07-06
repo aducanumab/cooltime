@@ -60,13 +60,21 @@ function splitDataUrl(dataUrl: string) {
 // 서술형 답변에서 '완성된 한 문장'만 추출 (Gemma가 앞에 영어 사고과정을 붙일 때 대비)
 function pickSentence(text: string): string {
   const t = (text || '').replace(/\r/g, '');
+  // 1) 줄 단위: 불릿·번호·영어 라벨 제외
   const lines = t.split(/\n+/).map((s) => s.trim())
     .filter((l) =>
       /[가-힣]/.test(l) && l.length >= 8
-      && !/^[-*#>]|^\d+[.)]/.test(l)         // 불릿·번호 제외
-      && !/^[A-Za-z][A-Za-z ]*:/.test(l));   // "Topic:" 같은 영어 라벨 제외
-  let best = lines.find((l) => /kcal|칼로리|열량/i.test(l)) || lines[lines.length - 1] || '';
-  if (best.length > 200) { // 한 줄에 여러 문장이면 kcal 포함 문장만
+      && !/^[-*#>]|^\d+[.)]/.test(l)
+      && !/^[A-Za-z][A-Za-z ]*:/.test(l));
+  let best = lines.find((l) => /kcal|칼로리|열량/i.test(l)) || lines[lines.length - 1];
+  // 2) 줄에서 못 찾으면 전체를 문장 단위로 쪼개서 탐색
+  if (!best) {
+    const sents = t.split(/(?<=[.!?。])\s+|\n+/).map((s) => s.trim())
+      .filter((s) => /[가-힣]/.test(s) && s.length >= 8);
+    best = sents.find((s) => /kcal|칼로리|열량/i.test(s)) || sents[sents.length - 1];
+  }
+  best = best || '';
+  if (best.length > 200) {
     const sents = best.split(/(?<=[.!?。])\s+/);
     best = sents.find((s) => /kcal|칼로리|열량/i.test(s)) || sents[0] || best;
   }
@@ -106,18 +114,34 @@ Deno.serve(async (req) => {
       });
 
     // 2-a) 영양정보 모드: 메뉴명 → 한 문장(메모용)
+    //   JSON 강제 출력(responseSchema)으로 Gemma의 영어 사고과정을 억제.
+    //   미지원(400)이면 넉넉한 토큰의 일반 모드 + 문장 추출로 폴백. 5xx/429는 재시도.
     if (!image && typeof menu === 'string' && menu.trim()) {
       const prompt =
-        `"${menu.trim()}" 1인분의 대략적 영양정보와 건강상 추천 섭취 간격(쿨타임)을 한국어로 짧게 한 문장으로만 답하라. ` +
-        `예시: "1인분 약 500kcal, 간장과 기름에 조린 헤비한 음식으로 2달에 한 번 정도 권장." ` +
-        `사고 과정·목록·머리말·마크다운 없이 완성된 한 문장만 출력하라.`;
-      // 토큰 넉넉히(Gemma 사고과정 뒤 한국어 답까지) + 일시적 5xx 1회 재시도
-      let r = await genText(prompt, { maxOutputTokens: 2048 });
-      if (r.status === 500 || r.status === 503) r = await genText(prompt, { maxOutputTokens: 2048 });
-      if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
+        `"${menu.trim()}" 1인분의 대략적 영양정보와 건강상 추천 섭취 간격(쿨타임)을 ` +
+        `한국어 한 문장으로 note 필드에 담아 JSON으로만 답하라. ` +
+        `예시: {"note":"1인분 약 500kcal, 간장과 기름에 조린 헤비한 음식으로 2달에 한 번 권장."}`;
+      const jsonCfg = {
+        temperature: 0.2,
+        maxOutputTokens: 512,
+        responseMimeType: 'application/json',
+        responseSchema: { type: 'OBJECT', properties: { note: { type: 'STRING' } }, required: ['note'] },
+      };
+      let r: Response | undefined;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        r = await genText(prompt, jsonCfg);
+        if (r.ok) break;
+        if (r.status === 400) { r = await genText(prompt, { maxOutputTokens: 3072 }); break; } // 스키마 미지원 → 일반 모드
+        if (r.status === 429 || r.status === 500 || r.status === 503) { await new Promise((s) => setTimeout(s, 800)); continue; }
+        break;
+      }
+      if (!r || !r.ok) return json({ error: `gemini ${r ? r.status : 0}`, detail: r ? (await r.text()).slice(0, 300) : '' }, 502);
       const d = await r.json();
       const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-      return json({ note: pickSentence(raw), raw: raw.slice(0, 400) }, 200);
+      let note = '';
+      try { note = String(extractJson(raw).note ?? '').trim(); } catch { note = pickSentence(raw); }
+      if (!note) note = pickSentence(raw); // JSON.note가 비면 원문에서 재추출
+      return json({ note, raw: raw.slice(0, 400) }, 200);
     }
 
     // 2-b) 텍스트 질의 모드: 모델 연결 점검용 (원문 그대로 반환)
@@ -161,6 +185,9 @@ Deno.serve(async (req) => {
     let r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
     if (r.status === 400) {
       r = await call({ temperature: 0, maxOutputTokens: 1024 });
+    } else if (r.status === 429 || r.status === 500 || r.status === 503) {
+      await new Promise((s) => setTimeout(s, 800)); // 과부하 일시적 오류 1회 재시도
+      r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
     }
     if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
 
