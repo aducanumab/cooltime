@@ -116,9 +116,10 @@ Deno.serve(async (req) => {
       });
 
     // 1차: JSON 강제 모드(camelCase!) → 미지원(400)이면 일반 모드로 폴백
-    let r = await call({ temperature: 0, maxOutputTokens: 512, responseMimeType: 'application/json' });
+    // Gemma는 사고과정을 길게 쓰므로 토큰을 넉넉히 줘서 뒤쪽 JSON까지 도달하게 함
+    let r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
     if (r.status === 400) {
-      r = await call({ temperature: 0, maxOutputTokens: 512 });
+      r = await call({ temperature: 0, maxOutputTokens: 1024 });
     }
     if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
 
@@ -135,10 +136,16 @@ Deno.serve(async (req) => {
       const quoted = [...text.matchAll(/"([^"]{1,20})"/g)].map((m) => m[1]);
       list = quoted.length ? quoted : text.split(/[\n,]+/).map((s) => s.trim());
     }
+    // 서술형 답변 대비 정제: 앞 번호/불릿, 괄호 안 영어, 마크다운/따옴표 제거 → 순수 메뉴명
+    const clean = (s: string) => s
+      .replace(/^\s*[-*\d.)\s]+/, '')     // 앞 번호·불릿
+      .replace(/\s*\([^)]*\)\s*/g, '')    // (Tteokbokki) 같은 괄호 병기
+      .replace(/[*#`_\[\]"'‘’“”]/g, '') // 마크다운·따옴표
+      .trim();
     const candidates = list
-      .map((c) => String(c).trim())
+      .map(clean)
       .filter((c) => /[가-힣]/.test(c))              // 한글 있는 것만
-      .filter((c) => c.length <= 20)                  // 서술 문장 제외
+      .filter((c) => c.length >= 2 && c.length <= 12) // 서술 문장 제외
       .filter((c) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 예시 에코 방어
       .filter((c, i, a) => a.indexOf(c) === i)        // 중복 제거
       .slice(0, 4);
