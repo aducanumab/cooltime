@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#edece3" />
   <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="styles.css?v=7" />
+  <link rel="stylesheet" href="styles.css?v=8" />
 </head>
 <body>
   <div class="app">
@@ -145,7 +145,8 @@
             </div>
             <div class="nutrition" id="f-nutrition" hidden></div>
 
-            <input type="file" id="photo-file" accept="image/*" capture="environment" hidden />
+            <!-- capture 속성 없음: iOS/안드로이드가 '카메라 촬영/사진첩 선택' 메뉴를 띄움 -->
+            <input type="file" id="photo-file" accept="image/*" hidden />
             <div class="photo-box" id="photo-box" hidden>
               <img id="f-photo-preview" class="photo-preview" alt="촬영한 사진" hidden />
               <span class="ai-hint" id="photo-hint"></span>

@@ -120,7 +120,7 @@ html, body {
 .field { display: flex; flex-direction: column; gap: 6px; }
 .field-label { font-size: 0.78rem; font-weight: 500; color: var(--muted); }
 .row { display: flex; gap: 10px; }
-.row .field { flex: 1; }
+.row .field { flex: 1; min-width: 0; } /* iOS: date 입력 고유폭이 옆 칸을 침범하지 않도록 */
 
 input, textarea, select {
   width: 100%;
@@ -134,6 +134,13 @@ input, textarea, select {
   transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
 }
 input::placeholder, textarea::placeholder { color: var(--faint); }
+/* iOS Safari: date 입력이 flex 안에서 줄어들도록 + 네이티브 스타일 정규화 */
+input[type="date"] {
+  min-width: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  text-align: left;
+}
 input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
