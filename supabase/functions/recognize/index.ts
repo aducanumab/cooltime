@@ -19,10 +19,11 @@ const CORS = {
 };
 
 const RECOGNIZE_SYS =
-  '사진 속 음식을 인식해 대표 메뉴명을 최대 4개까지 한국어로 추출한다. ' +
-  '반드시 JSON 하나만 출력한다: {"candidates":["메뉴1","메뉴2"]}. ' +
-  '각 항목은 짧은 메뉴명(예: 떡볶이, 김밥). 설명·문장·마크다운·코드블록 금지. ' +
-  '음식이 안 보이면 {"candidates":[]}.';
+  '위 이미지에 실제로 보이는 음식이 무엇인지 판별하고, 그 음식의 이름을 한국어로 답하라. ' +
+  '출력은 JSON 객체 하나뿐이어야 하며 형식은 {"candidates": [ ... ]} 이다. ' +
+  '배열에는 이미지에 보이는 음식 이름만 문자열로 넣는다(최대 4개, 가능성 높은 순). ' +
+  '이미지에 없는 음식 이름, 자리표시자, 설명 문장, 마크다운은 절대 넣지 않는다. ' +
+  '음식이 안 보이면 {"candidates": []} 를 출력한다.';
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -89,8 +90,8 @@ Deno.serve(async (req) => {
         body: JSON.stringify({
           contents: [{
             parts: [
-              { text: `${RECOGNIZE_SYS}\n\n이 사진을 분석해 JSON으로만 답하라.` },
-              { inline_data: { mime_type: mimeType, data: base64 } },
+              { inline_data: { mime_type: mimeType, data: base64 } }, // 이미지를 먼저
+              { text: RECOGNIZE_SYS },
             ],
           }],
           generationConfig: { temperature: 0.1, maxOutputTokens: 200 },
@@ -105,9 +106,11 @@ Deno.serve(async (req) => {
     const candidates = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
       .map((c: unknown) => String(c).trim())
       .filter(Boolean)
+      .filter((c: string) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 자리표시자 에코 방어
       .slice(0, 4);
 
-    return json({ candidates, name: candidates[0] ?? '' }, 200);
+    // raw: 모델 원문 일부(디버깅용 — 클라이언트는 무시해도 됨)
+    return json({ candidates, name: candidates[0] ?? '', raw: text.slice(0, 200) }, 200);
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }
