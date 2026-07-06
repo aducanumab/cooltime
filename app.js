@@ -47,11 +47,11 @@ if (!llm) {
   };
   saveJSON(LS.llm, llm);
 }
-if (llm && !llm.recognizer) llm.recognizer = 'mock'; // 기존 사용자 backfill
-if (llm && (llm.provider === 'openrouter' || llm.recognizer === 'openrouter')) {
-  // OpenRouter 공급자 제거(→ Google AI Studio 직결로 대체)에 따른 정리
-  if (llm.provider === 'openrouter') llm.provider = 'mock';
-  if (llm.recognizer === 'openrouter') llm.recognizer = 'builtin';
+if (llm) {
+  // 인식기 정리: 누락 또는 (개발용) mock/openrouter → 서버 자동 인식(builtin)으로.
+  // mock은 네트워크 없이 항상 '떡볶이'만 즉시 반환하는 placeholder라 실사용 대상이 아님.
+  if (!llm.recognizer || llm.recognizer === 'mock' || llm.recognizer === 'openrouter') llm.recognizer = 'builtin';
+  if (llm.provider === 'openrouter') llm.provider = 'mock'; // (구) 영양분석 openrouter 정리
   saveJSON(LS.llm, llm);
 }
 function saveLlm() { saveJSON(LS.llm, llm); }
