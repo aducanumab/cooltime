@@ -115,8 +115,8 @@ Deno.serve(async (req) => {
         }),
       });
 
-    // 1차: JSON 강제 모드 → 모델이 미지원(400)이면 일반 모드로 폴백
-    let r = await call({ temperature: 0, maxOutputTokens: 512, response_mime_type: 'application/json' });
+    // 1차: JSON 강제 모드(camelCase!) → 미지원(400)이면 일반 모드로 폴백
+    let r = await call({ temperature: 0, maxOutputTokens: 512, responseMimeType: 'application/json' });
     if (r.status === 400) {
       r = await call({ temperature: 0, maxOutputTokens: 512 });
     }
@@ -124,15 +124,27 @@ Deno.serve(async (req) => {
 
     const d = await r.json();
     const text = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
-    const parsed = extractJson(text);
-    const candidates = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
-      .map((c: unknown) => String(c).trim())
-      .filter((c: string) => /[가-힣A-Za-z]/.test(c)) // 글자 없는 자리표시자("...") 제거
-      .filter((c: string) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 예시 에코 방어
+
+    // JSON 우선, 실패 시 텍스트에서 관대하게 후보 추출 (Gemma가 서술형으로 답할 때 대비)
+    let list: string[] = [];
+    try {
+      const parsed = extractJson(text);
+      if (Array.isArray(parsed.candidates)) list = parsed.candidates.map((c: unknown) => String(c));
+    } catch {
+      // 폴백: 따옴표로 묶인 토큰 → 없으면 쉼표/줄바꿈 분리
+      const quoted = [...text.matchAll(/"([^"]{1,20})"/g)].map((m) => m[1]);
+      list = quoted.length ? quoted : text.split(/[\n,]+/).map((s) => s.trim());
+    }
+    const candidates = list
+      .map((c) => String(c).trim())
+      .filter((c) => /[가-힣]/.test(c))              // 한글 있는 것만
+      .filter((c) => c.length <= 20)                  // 서술 문장 제외
+      .filter((c) => !/^(menu|메뉴)\s*\d*$/i.test(c)) // 예시 에코 방어
+      .filter((c, i, a) => a.indexOf(c) === i)        // 중복 제거
       .slice(0, 4);
 
-    // raw: 모델 원문 일부(디버깅용 — 클라이언트는 무시해도 됨)
-    return json({ candidates, name: candidates[0] ?? '', raw: text.slice(0, 200) }, 200);
+    // 파싱 실패해도 200 + raw 로 진단 가능하게 (500 던지지 않음)
+    return json({ candidates, name: candidates[0] ?? '', raw: text.slice(0, 300) }, 200);
   } catch (e) {
     return json({ error: String((e as Error)?.message ?? e) }, 500);
   }
