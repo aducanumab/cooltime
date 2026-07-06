@@ -636,6 +636,7 @@ function enterPreview() {
   newlyReady = new Set();
   seedDemo();
   renderAll();
+  $('#f-cooldown').value = defaultCooldown();
   setGate(true);
   togglePreviewBanner(true);
 }
@@ -664,6 +665,7 @@ async function enterApp(session) {
   await maybeImportLegacy();
   computeNewlyReady();
   renderAll();
+  $('#f-cooldown').value = defaultCooldown();
   setGate(true);
   notifyNewlyReady();
 }
@@ -997,23 +999,12 @@ function renderManageTab() {
   }
 
   $('#set-default-cooldown').value = defaultCooldown();
-  $('#set-provider').value = llm.provider;
   $('#set-recognizer').value = llm.recognizer;
   $('#acc-email').textContent = currentUser ? currentUser.email : '';
   const au = $('#account-user'), ag = $('#account-guest');
   if (au) au.hidden = guestMode;
   if (ag) ag.hidden = !guestMode;
-  renderProviderConfig();
   renderRecognizerConfig();
-}
-
-function renderProviderConfig() {
-  const p = llm.provider;
-  const box = $('#provider-config');
-  if (p === 'mock') { box.hidden = true; return; }
-  box.hidden = false;
-  $('#set-key').value = llm.keys[p] || '';
-  $('#set-model').value = llm.models[p] || '';
 }
 
 function renderRecognizerConfig() {
@@ -1052,27 +1043,32 @@ function initRecordForm() {
 
   $('#f-name').addEventListener('change', () => {
     const m = findMenuByName($('#f-name').value);
-    if (m) $('#f-cooldown').value = m.cooldownDays;
+    $('#f-cooldown').value = m ? m.cooldownDays : defaultCooldown();
   });
 
-  // AI 분석
+  // AI 영양정보: 서버(관리자 키) Gemma로 메뉴명 → 한 문장, '메모' 칸만 채움
   $('#btn-ai').addEventListener('click', async () => {
+    if (guestMode) { requireAuth('로그인 후 이용이 가능합니다'); return; }
     const name = $('#f-name').value.trim();
     if (!name) { toast('먼저 메뉴 이름을 입력하세요.'); return; }
     const btn = $('#btn-ai');
     const hint = $('#ai-hint');
     btn.disabled = true;
-    hint.textContent = `분석 중… (${(PROVIDERS[llm.provider] || PROVIDERS.mock).label})`;
+    hint.textContent = '영양정보 분석 중…';
     try {
-      const n = await analyzeNutrition(name);
-      lastNutrition = n;
-      showNutrition(n);
-      if (!$('#f-note').value.trim() && n.healthNote) $('#f-note').value = n.healthNote;
-      if (!$('#f-cooldown').value && n.suggestedCooldownDays) $('#f-cooldown').value = n.suggestedCooldownDays;
+      const fn = (window.COOLTIME_CONFIG && window.COOLTIME_CONFIG.RECOGNIZE_FUNCTION) || 'recognize';
+      const { data, error } = await sb.functions.invoke(fn, { body: { menu: name } });
+      if (error) {
+        let detail = error.message || String(error);
+        try { const b = await error.context.json(); if (b && b.error) detail = b.error; } catch (_) {}
+        throw new Error(detail);
+      }
+      if (data && data.error) throw new Error(data.error);
+      $('#f-note').value = (data && data.note) ? data.note : '';
       hint.textContent = '';
     } catch (err) {
       hint.textContent = '';
-      toast('분석 실패: ' + err.message);
+      toast('영양정보 실패: ' + (err.message || err));
     } finally {
       btn.disabled = false;
     }
@@ -1097,6 +1093,7 @@ function initRecordForm() {
 
       e.target.reset();
       $('#f-date').value = todayStr();
+      $('#f-cooldown').value = defaultCooldown();
       hideNutrition();
       resetPhotoUI();
       lastNutrition = null;
@@ -1123,7 +1120,10 @@ function initRecordForm() {
   });
 
   // 📷 사진으로 기록
-  $('#btn-photo').addEventListener('click', () => $('#photo-file').click());
+  $('#btn-photo').addEventListener('click', () => {
+    if (guestMode) { requireAuth('로그인 후 이용이 가능합니다'); return; }
+    $('#photo-file').click();
+  });
   $('#photo-file').addEventListener('change', async (e) => {
     const file = e.target.files[0];
     e.target.value = ''; // 같은 파일 다시 선택 가능하게
@@ -1255,19 +1255,6 @@ function initManage() {
     } catch (err) {
       toast('저장 실패: ' + authMsg(err));
     }
-  });
-
-  // LLM 설정 (기기 로컬)
-  $('#set-provider').addEventListener('change', (e) => {
-    llm.provider = e.target.value;
-    saveLlm();
-    renderProviderConfig();
-  });
-  $('#set-key').addEventListener('change', (e) => {
-    if (llm.provider !== 'mock') { llm.keys[llm.provider] = e.target.value.trim(); saveLlm(); }
-  });
-  $('#set-model').addEventListener('change', (e) => {
-    if (llm.provider !== 'mock') { llm.models[llm.provider] = e.target.value.trim(); saveLlm(); }
   });
 
   // 사진 인식 공급자 (기기 로컬)

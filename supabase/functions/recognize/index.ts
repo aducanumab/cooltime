@@ -57,6 +57,15 @@ function splitDataUrl(dataUrl: string) {
   return { mimeType: m[1], base64: m[2] };
 }
 
+// 서술형 답변에서 '완성된 한 문장'만 추출 (Gemma가 앞에 사고과정을 붙일 때 대비)
+function pickSentence(text: string): string {
+  const lines = (text || '')
+    .split(/\n+/).map((s) => s.trim())
+    .filter((l) => /[가-힣]/.test(l) && l.length >= 8 && !/^[-*#>]|^\d+[.)]/.test(l));
+  const best = lines.find((l) => /kcal|칼로리|열량/i.test(l)) || lines[lines.length - 1] || '';
+  return best.replace(/^["'*\-\s]+/, '').replace(/["'*\s]+$/, '').slice(0, 200);
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -72,14 +81,37 @@ Deno.serve(async (req) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return json({ error: '로그인이 필요합니다.' }, 401);
 
-    // 2) 입력 수신 (image: 사진 인식 / text: 연결 헬스체크)
-    const { image, text: textQuery } = await req.json().catch(() => ({}));
+    // 2) 입력 수신 (image: 사진 인식 / menu: 영양정보 / text: 연결 헬스체크)
+    const { image, text: textQuery, menu } = await req.json().catch(() => ({}));
 
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json({ error: '서버에 GEMINI_API_KEY가 설정되지 않았습니다.' }, 500);
     const model = Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it';
 
-    // 2-a) 텍스트 질의 모드: 모델 연결 점검용 (원문 그대로 반환)
+    const genText = (prompt: string, cfg: Record<string, unknown> = {}) =>
+      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: { temperature: 0.3, maxOutputTokens: 1024, ...cfg },
+        }),
+      });
+
+    // 2-a) 영양정보 모드: 메뉴명 → 한 문장(메모용)
+    if (!image && typeof menu === 'string' && menu.trim()) {
+      const prompt =
+        `"${menu.trim()}" 1인분의 대략적 영양정보와 건강상 추천 섭취 간격(쿨타임)을 한국어로 짧게 한 문장으로만 답하라. ` +
+        `예시: "1인분 약 500kcal, 간장과 기름에 조린 헤비한 음식으로 2달에 한 번 정도 권장." ` +
+        `사고 과정·목록·머리말·마크다운 없이 완성된 한 문장만 출력하라.`;
+      const r = await genText(prompt);
+      if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
+      const d = await r.json();
+      const raw = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+      return json({ note: pickSentence(raw), raw: raw.slice(0, 300) }, 200);
+    }
+
+    // 2-b) 텍스트 질의 모드: 모델 연결 점검용 (원문 그대로 반환)
     if (!image && textQuery && typeof textQuery === 'string') {
       const r = await fetch(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
