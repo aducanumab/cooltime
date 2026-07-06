@@ -117,29 +117,18 @@ supabase-schema.sql  # DB 스키마 + RLS — Supabase SQL Editor에서 1회 실
 | **자동 인식 (서비스 제공)** ⭐기본 | **음식 접시 인식** | 이용자 무료 (관리자가 부담) | 로그인 필요 · 키 입력 불필요 · 관리자 키는 **서버(프록시)에만** |
 | **데모(mock)** | 배선 확인용 | 0원 | 실제 인식 아님 |
 | **기기 내 OCR (tesseract)** | 메뉴판·영수증 **글자** | 무료·오프라인 | 최초 1회 한국어 데이터(수 MB) 다운로드. 음식 접시엔 못 씀 |
-| **Claude / OpenAI / Gemini / OpenRouter 비전 (BYOK)** | **음식 접시 인식** | 본인 키·호출당 | 자가호스팅/고급용. 키는 브라우저에만 저장 |
+| **Claude / OpenAI / Gemini 비전 (BYOK)** | **음식 접시 인식** | 본인 키·호출당 | 자가호스팅/고급용. 키는 브라우저에만 저장 |
 
 ### 자동 인식 셋업 (관리자 1회) — 서버 프록시로 키 보호
-이용자마다 키를 넣게 하지 않고, **관리자 키 하나로 모든 로그인 유저에게 인식**을 제공합니다. 키는 브라우저에 노출되지 않도록 **Supabase Edge Function**(서버)에 보관합니다.
+이용자마다 키를 넣게 하지 않고, **관리자 키 하나로 모든 로그인 유저에게 인식**을 제공합니다. 키는 브라우저에 노출되지 않도록 **Supabase Edge Function**(서버)에 보관하고, 함수가 **Google AI Studio의 Gemma**(`gemma-4-31b-it`, 무료 쿼터)를 직접 호출합니다.
 
-1. **OpenRouter 키 발급**: https://openrouter.ai → Keys → `sk-or-v1-...`
-2. **함수 배포**: Supabase 대시보드 → **Edge Functions → Deploy a new function → Via Editor** → 함수 이름 입력 → [`supabase/functions/recognize/index.ts`](supabase/functions/recognize/index.ts) 내용 붙여넣고 **Deploy**
-   - ⚠️ **함수 이름이 `config.js`의 `RECOGNIZE_FUNCTION` 값과 일치해야 합니다.** (기본값 `dynamic-service`. Supabase가 자동으로 준 이름을 그대로 쓰면 그 이름을 `config.js`에 넣거나, 배포 시 이름을 바꿔 맞추세요.)
-3. **시크릿 설정**: Edge Functions → **Secrets** 에 `OPENROUTER_API_KEY` = 발급한 키 추가 (선택: `OPENROUTER_MODEL`)
+1. **Google AI Studio 키 발급**: https://aistudio.google.com → Get API key (`AIza...`)
+2. **함수 배포**: Supabase 대시보드 → **Edge Functions** → 함수 열기(또는 새로 생성) → [`supabase/functions/recognize/index.ts`](supabase/functions/recognize/index.ts) 내용으로 교체 → **Deploy**
+   - ⚠️ **함수 이름이 `config.js`의 `RECOGNIZE_FUNCTION` 값과 일치해야 합니다.** (현재 `dynamic-service`)
+3. **시크릿 설정**: Edge Functions → **Secrets** 에 `GEMINI_API_KEY` = 발급한 키 추가 (선택: `GEMINI_MODEL`, 기본 `gemma-4-31b-it`)
 4. 끝 — 로그인한 유저가 📷 사진으로 기록하면 서버가 대신 인식해 **메뉴 후보 최대 4개**를 돌려줍니다. (키 노출 0, 게스트·미로그인은 401로 차단)
 
 > 인식 프롬프트를 "JSON·최대 4개·설명 금지"로 강하게 제약해 Gemma의 장황한 출력을 막았습니다. 함수 소스는 repo의 [index.ts](supabase/functions/recognize/index.ts)가 정본입니다(대시보드 편집기는 버전관리 없음).
-
-> **무료 모델 레이트리밋 주의:** `google/gemma-4-31b-it:free`는 OpenRouter 공유 무료 풀이라 특히 이미지 요청에서 **429(rate limited)** 가 자주 납니다. 안정적으로 쓰려면 셋 중 하나:
-> (a) **OpenRouter Settings → Integrations 에 본인 Google AI Studio 키 추가** → 요청이 본인 Google 무료 쿼터로 나가서 훨씬 넉넉함(무료 유지, 함수 변경 불필요),
-> (b) OpenRouter에 소액 크레딧 충전(무료 모델 한도↑ + 저렴한 유료 모델 사용 가능),
-> (c) `OPENROUTER_MODEL` 시크릿을 안정적인 유료 비전 모델로 변경.
-
-### (대안) OpenRouter를 개인 키로 직접 쓰기 (BYOK · 자가호스팅용)
-1. https://openrouter.ai 가입 → **Keys**에서 API 키 발급(`sk-or-v1-...`)
-2. 관리 > 설정 > **사진 인식 공급자 = OpenRouter** 선택 → 키 입력, 모델명은 기본값 `google/gemma-4-31b-it:free`(무료·멀티모달) 그대로 두거나 원하는 모델 ID로 변경
-3. OpenRouter는 OpenAI 호환 API라 같은 키를 **AI 영양분석 공급자**에도 그대로 쓸 수 있어요.
-> `:free` 모델은 무료지만 분당·일일 호출 제한이 있습니다. 이미지가 OpenRouter 서버로 전송되는 점은 다른 비전 공급자와 동일.
 
 - 비전 공급자는 키를 **이 브라우저에만** 저장하고, 인식할 때만 호출됩니다(사진 저장 안 함 — 인식 후 폐기).
 - 사진 처리 전 자동으로 리사이즈·압축(장변 1280px, JPEG)해서 속도·비용을 줄입니다.

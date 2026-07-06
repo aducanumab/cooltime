@@ -1,14 +1,14 @@
 // ============================================================
-//  Supabase Edge Function: recognize
-//  사진 → 음식 메뉴명 최대 4개 인식 (관리자 OpenRouter 키로 프록시)
+//  Supabase Edge Function: 사진 → 음식 메뉴명 최대 4개 인식
+//  (관리자의 Google AI Studio 키로 Gemma를 직접 호출하는 프록시)
 //
-//  배포: 대시보드 > Edge Functions > Deploy a new function > Via Editor
-//        함수 이름 'recognize' 로 이 파일 내용을 붙여넣고 Deploy.
+//  배포: 대시보드 > Edge Functions > (기존 함수 열기) > 코드 전체 교체 > Deploy
+//        * 함수 이름은 config.js 의 RECOGNIZE_FUNCTION 값과 일치해야 함 (현재 dynamic-service)
 //  시크릿: Edge Functions > Secrets 에 아래 추가
-//        OPENROUTER_API_KEY = sk-or-v1-...        (필수, 관리자 키 — 브라우저에 안 감)
-//        OPENROUTER_MODEL   = google/gemma-4-31b-it:free   (선택, 기본값 동일)
-//  * 로그인한 사용자만 호출 가능(아래 getUser 검증). SUPABASE_URL / SUPABASE_ANON_KEY
-//    는 플랫폼이 자동 주입하는 환경변수라 별도 설정 불필요.
+//        GEMINI_API_KEY = AIza...            (필수, Google AI Studio 키 — 브라우저에 안 감)
+//        GEMINI_MODEL   = gemma-4-31b-it     (선택, 기본값 동일)
+//  * 로그인한 사용자만 호출 가능(getUser 검증). SUPABASE_URL / SUPABASE_ANON_KEY 는
+//    플랫폼이 자동 주입하는 환경변수라 별도 설정 불필요.
 // ============================================================
 import { createClient } from 'jsr:@supabase/supabase-js@2';
 
@@ -38,6 +38,13 @@ function extractJson(text: string): any {
   return JSON.parse(m[0]);
 }
 
+// dataURL → { mimeType, base64 }
+function splitDataUrl(dataUrl: string) {
+  const m = /^data:([^;]+);base64,(.+)$/.exec(dataUrl ?? '');
+  if (!m) throw new Error('이미지 형식 오류 (dataURL 아님)');
+  return { mimeType: m[1], base64: m[2] };
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: CORS });
   if (req.method !== 'POST') return json({ error: 'method not allowed' }, 405);
@@ -56,38 +63,33 @@ Deno.serve(async (req) => {
     // 2) 이미지 수신
     const { image } = await req.json().catch(() => ({}));
     if (!image || typeof image !== 'string') return json({ error: '이미지가 없습니다.' }, 400);
+    const { mimeType, base64 } = splitDataUrl(image);
 
-    // 3) 관리자 키로 OpenRouter(Gemma 4) 호출
-    const key = Deno.env.get('OPENROUTER_API_KEY');
-    if (!key) return json({ error: '서버에 OPENROUTER_API_KEY가 설정되지 않았습니다.' }, 500);
-    const model = Deno.env.get('OPENROUTER_MODEL') ?? 'google/gemma-4-31b-it:free';
+    // 3) 관리자 키로 Google AI Studio(Gemma) 직접 호출
+    const key = Deno.env.get('GEMINI_API_KEY');
+    if (!key) return json({ error: '서버에 GEMINI_API_KEY가 설정되지 않았습니다.' }, 500);
+    const model = Deno.env.get('GEMINI_MODEL') ?? 'gemma-4-31b-it';
 
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-        authorization: `Bearer ${key}`,
-        'HTTP-Referer': 'https://aducanumab.github.io/cooltime/',
-        'X-Title': 'Cooltime Tracker',
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: 'system', content: RECOGNIZE_SYS },
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: '이 사진을 분석해 JSON으로만 답하라.' },
-              { type: 'image_url', image_url: { url: image } },
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: `${RECOGNIZE_SYS}\n\n이 사진을 분석해 JSON으로만 답하라.` },
+              { inline_data: { mime_type: mimeType, data: base64 } },
             ],
-          },
-        ],
-      }),
-    });
-    if (!r.ok) return json({ error: `openrouter ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
+          }],
+        }),
+      },
+    );
+    if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
 
     const d = await r.json();
-    const parsed = extractJson(d?.choices?.[0]?.message?.content ?? '');
+    const text = d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const parsed = extractJson(text);
     const candidates = (Array.isArray(parsed.candidates) ? parsed.candidates : [])
       .map((c: unknown) => String(c).trim())
       .filter(Boolean)

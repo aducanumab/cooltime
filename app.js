@@ -39,17 +39,21 @@ if (!llm) {
   llm = {
     provider: legacy.llmProvider || 'mock',
     recognizer: 'builtin',
-    keys: Object.assign({ claude: '', openai: '', gemini: '', openrouter: '' }, legacy.keys || {}),
+    keys: Object.assign({ claude: '', openai: '', gemini: '' }, legacy.keys || {}),
     models: Object.assign(
-      { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash', openrouter: 'google/gemma-4-31b-it:free' },
+      { claude: 'claude-haiku-4-5-20251001', openai: 'gpt-4o-mini', gemini: 'gemini-2.0-flash' },
       legacy.models || {}
     ),
   };
   saveJSON(LS.llm, llm);
 }
 if (llm && !llm.recognizer) llm.recognizer = 'mock'; // 기존 사용자 backfill
-if (llm && llm.keys.openrouter == null) llm.keys.openrouter = '';
-if (llm && !llm.models.openrouter) llm.models.openrouter = 'google/gemma-4-31b-it:free';
+if (llm && (llm.provider === 'openrouter' || llm.recognizer === 'openrouter')) {
+  // OpenRouter 공급자 제거(→ Google AI Studio 직결로 대체)에 따른 정리
+  if (llm.provider === 'openrouter') llm.provider = 'mock';
+  if (llm.recognizer === 'openrouter') llm.recognizer = 'builtin';
+  saveJSON(LS.llm, llm);
+}
 function saveLlm() { saveJSON(LS.llm, llm); }
 
 /* ---------- 앱 상태 (클라우드 캐시) ---------- */
@@ -322,32 +326,6 @@ const PROVIDERS = {
     },
   },
 
-  /* ---- OpenRouter (OpenAI 호환 · Gemma 등 아무 모델) ---- */
-  openrouter: {
-    label: 'OpenRouter',
-    needsKey: true,
-    async analyze(name) {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${llm.keys.openrouter}`,
-          'HTTP-Referer': location.origin,
-          'X-Title': 'Cooltime Tracker',
-        },
-        body: JSON.stringify({
-          model: llm.models.openrouter,
-          messages: [
-            { role: 'system', content: NUTRITION_SYS },
-            { role: 'user', content: nutritionUserMsg(name) },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
-      const d = await res.json();
-      return normalizeNutrition(extractJson(d.choices?.[0]?.message?.content));
-    },
-  },
 };
 
 async function analyzeNutrition(name) {
@@ -579,35 +557,6 @@ const RECOGNIZERS = {
     },
   },
 
-  /* ---- OpenRouter 비전 (OpenAI 호환 · Gemma 4 등 멀티모달 모델) ---- */
-  openrouter: {
-    label: 'OpenRouter 비전',
-    needsKey: true,
-    async recognize(dataUrl) {
-      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${llm.keys.openrouter}`,
-          'HTTP-Referer': location.origin,
-          'X-Title': 'Cooltime Tracker',
-        },
-        body: JSON.stringify({
-          model: llm.models.openrouter,
-          messages: [
-            { role: 'system', content: RECOGNIZE_SYS },
-            { role: 'user', content: [
-              { type: 'text', text: '이 사진을 분석해 JSON으로만 답하라.' },
-              { type: 'image_url', image_url: { url: dataUrl } },
-            ] },
-          ],
-        }),
-      });
-      if (!res.ok) throw new Error(`OpenRouter ${res.status}: ${await res.text()}`);
-      const d = await res.json();
-      return normalizeRecognition(extractJson(d.choices?.[0]?.message?.content));
-    },
-  },
 };
 
 async function recognizeMenu(dataUrl) {
