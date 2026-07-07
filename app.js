@@ -4,8 +4,8 @@
  *  쿨타임 트래커 v2 — 계정(Supabase Auth) + 클라우드 DB(Postgres/RLS)
  *  - 로그인 필수. 기록·메뉴는 본인 계정에만 저장(행 단위 보안).
  *  - 비밀번호는 우리 DB에 없음 — Supabase Auth가 해시로 관리.
- *  - AI 영양분석: 공급자 무관 어댑터 (기본 = 무료 데모 mock).
- *    LLM 키/설정은 이 브라우저(localStorage)에만 저장, 서버 전송 없음.
+ *  - AI: 사진 자동 인식(서버 프록시=builtin) + 메모 자동 채움(서버 Gemma).
+ *    비전 BYOK 인식기(claude/openai/gemini)의 키는 이 브라우저(localStorage)에만 저장.
  * ======================================================================= */
 
 /* ---------- Supabase 클라이언트 ---------- */
@@ -19,7 +19,7 @@ const sb = CONFIG_READY ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUP
 /* ---------- 로컬 저장 (기기 전용 항목만) ---------- */
 const LS = {
   llm: 'cooldown.llm',                    // LLM 공급자/키/모델 — 기기 전용
-  lastSeen: 'cooldown.lastSeenAt',        // 인앱 '새로 완료' 판단 기준(기기별)
+  lastSeen: 'cooldown.lastSeenAt',        // 인앱 '새로 완료' 판단 기준(계정별: 뒤에 user.id 붙임)
   migrateDismissed: 'cooldown.migrateDismissed',
   legacyMenus: 'cooldown.menus',          // v1(localStorage) 데이터 — 이관 대상
   legacyRecords: 'cooldown.records',
@@ -60,7 +60,7 @@ function saveLlm() { saveJSON(LS.llm, llm); }
 let currentUser = null;   // Supabase user
 let profile = null;       // profiles 행
 let menus = [];           // [{id, name, cooldownDays, createdAt}]
-let records = [];         // [{id, menuId, name, date, note, nutrition, createdAt}]
+let records = [];         // [{id, menuId, name, date, note, createdAt}]
 let newlyReady = new Set(); // 이번 세션에 '새로 완료'된 menuId
 let loadedForUser = null;
 
@@ -75,7 +75,6 @@ function todayStr() { return ymd(new Date()); }
 function parseDate(s) { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); } // 로컬 자정
 function daysBetween(a, b) { return Math.round((b - a) / 86400000); }
 function addDays(date, n) { const d = new Date(date); d.setDate(d.getDate() + n); return d; }
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) =>
@@ -127,7 +126,6 @@ function mapRecord(row) {
     id: row.id, menuId: row.menu_id,
     name: m ? m.name : '(삭제된 메뉴)',
     date: row.eaten_on, note: row.note || '',
-    nutrition: row.nutrition || null,
     createdAt: Date.parse(row.created_at) || 0,
   };
 }
@@ -190,9 +188,9 @@ const store = {
     records = records.filter((r) => r.menuId !== id);
   },
 
-  async addRecord({ menuId, date, note, nutrition }) {
+  async addRecord({ menuId, date, note }) {
     const { data, error } = await sb.from('records')
-      .insert({ menu_id: menuId, eaten_on: date, note: note || null, nutrition: nutrition || null })
+      .insert({ menu_id: menuId, eaten_on: date, note: note || null })
       .select().single();
     if (error) throw error;
     const rec = mapRecord(data);
@@ -220,16 +218,8 @@ const store = {
 };
 
 /* =========================================================================
- *  AI 영양분석 — 공급자 무관 어댑터 (v1과 동일 구조, 설정만 llm.*)
- *  반환: { calories, carbs, protein, fat, sodium, healthNote, suggestedCooldownDays }
+ *  공용 파서 — 비전 인식기(claude/openai/gemini) 응답에서 JSON 추출
  * ======================================================================= */
-const NUTRITION_SYS =
-  '너는 음식 영양 분석기다. 사용자가 준 음식의 1인분 기준 대략적 영양정보를 JSON으로만 답하라. ' +
-  '키: calories(kcal, 숫자), carbs(g), protein(g), fat(g), sodium(mg), ' +
-  'healthNote(한국어 한 문장 건강 코멘트), suggestedCooldownDays(건강상 권장 섭취 간격 일수, 숫자). ' +
-  '모르면 합리적 추정치를 써라. JSON 외의 어떤 텍스트도 출력하지 마라.';
-const nutritionUserMsg = (name) => `음식: ${name}`;
-
 // 첫 번째 '완전한' JSON 객체만 추출 (모델이 JSON 뒤에 군더더기를 붙여도 안전)
 function extractJson(text) {
   if (!text) throw new Error('빈 응답');
@@ -247,138 +237,9 @@ function extractJson(text) {
   }
   throw new Error('JSON을 찾지 못함: ' + text.slice(0, 120));
 }
-function normalizeNutrition(o) {
-  const num = (v, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
-  return {
-    calories: num(o.calories),
-    carbs: num(o.carbs),
-    protein: num(o.protein),
-    fat: num(o.fat),
-    sodium: num(o.sodium),
-    healthNote: o.healthNote ? String(o.healthNote) : '',
-    suggestedCooldownDays: o.suggestedCooldownDays != null ? num(o.suggestedCooldownDays) : null,
-  };
-}
-
-const PROVIDERS = {
-  /* ---- 무료 데모: 네트워크 호출 없음, 로컬 추정 ---- */
-  mock: {
-    label: '데모(무료·로컬)',
-    needsKey: false,
-    async analyze(name) {
-      await sleep(450);
-      return normalizeNutrition(mockNutrition(name));
-    },
-  },
-
-  /* ---- Claude (Anthropic Messages API) ---- */
-  claude: {
-    label: 'Claude',
-    needsKey: true,
-    async analyze(name) {
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-api-key': llm.keys.claude,
-          'anthropic-version': '2023-06-01',
-          'anthropic-dangerous-direct-browser-access': 'true',
-        },
-        body: JSON.stringify({
-          model: llm.models.claude,
-          max_tokens: 300,
-          system: NUTRITION_SYS,
-          messages: [{ role: 'user', content: nutritionUserMsg(name) }],
-        }),
-      });
-      if (!res.ok) throw new Error(`Claude ${res.status}: ${await res.text()}`);
-      const data = await res.json();
-      return normalizeNutrition(extractJson(data.content?.[0]?.text));
-    },
-  },
-
-  /* ---- OpenAI (Chat Completions) ---- */
-  openai: {
-    label: 'OpenAI',
-    needsKey: true,
-    async analyze(name) {
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', authorization: `Bearer ${llm.keys.openai}` },
-        body: JSON.stringify({
-          model: llm.models.openai,
-          messages: [
-            { role: 'system', content: NUTRITION_SYS },
-            { role: 'user', content: nutritionUserMsg(name) },
-          ],
-          response_format: { type: 'json_object' },
-        }),
-      });
-      if (!res.ok) throw new Error(`OpenAI ${res.status}: ${await res.text()}`);
-      const data = await res.json();
-      return normalizeNutrition(extractJson(data.choices?.[0]?.message?.content));
-    },
-  },
-
-  /* ---- Google Gemini (generateContent) ---- */
-  gemini: {
-    label: 'Gemini',
-    needsKey: true,
-    async analyze(name) {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${llm.models.gemini}:generateContent?key=${encodeURIComponent(llm.keys.gemini)}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: [{ text: `${NUTRITION_SYS}\n\n${nutritionUserMsg(name)}` }] }] }),
-      });
-      if (!res.ok) throw new Error(`Gemini ${res.status}: ${await res.text()}`);
-      const data = await res.json();
-      return normalizeNutrition(extractJson(data.candidates?.[0]?.content?.parts?.[0]?.text));
-    },
-  },
-
-};
-
-async function analyzeNutrition(name) {
-  const provider = PROVIDERS[llm.provider] || PROVIDERS.mock;
-  if (provider.needsKey && !llm.keys[llm.provider]) {
-    throw new Error(`${provider.label} API 키가 설정되지 않았습니다. (관리 > 설정)`);
-  }
-  return provider.analyze(name);
-}
-
-/* ---- 데모용 로컬 영양 추정 ---- */
-const MOCK_DB = {
-  '떡볶이': { calories: 480, carbs: 92, protein: 9, fat: 8, sodium: 1300, healthNote: '탄수화물·나트륨이 높아 자주 먹기엔 부담돼요.', suggestedCooldownDays: 14 },
-  '라면': { calories: 500, carbs: 73, protein: 10, fat: 17, sodium: 1800, healthNote: '나트륨이 매우 높습니다. 국물은 남기는 게 좋아요.', suggestedCooldownDays: 10 },
-  '치킨': { calories: 800, carbs: 30, protein: 55, fat: 50, sodium: 1500, healthNote: '단백질은 풍부하지만 지방·열량이 높아요.', suggestedCooldownDays: 10 },
-  '피자': { calories: 700, carbs: 80, protein: 28, fat: 30, sodium: 1400, healthNote: '한 판은 칼로리 폭탄, 적당히 즐기세요.', suggestedCooldownDays: 14 },
-  '삼겹살': { calories: 650, carbs: 2, protein: 32, fat: 56, sodium: 600, healthNote: '포화지방이 많으니 채소와 곁들이세요.', suggestedCooldownDays: 7 },
-  '햄버거': { calories: 600, carbs: 45, protein: 28, fat: 32, sodium: 1100, healthNote: '세트로 먹으면 열량이 크게 늘어요.', suggestedCooldownDays: 10 },
-  '마라탕': { calories: 550, carbs: 60, protein: 25, fat: 22, sodium: 2000, healthNote: '나트륨·기름이 많은 편이에요.', suggestedCooldownDays: 14 },
-  '곱창': { calories: 700, carbs: 10, protein: 30, fat: 60, sodium: 900, healthNote: '콜레스테롤·지방이 높습니다.', suggestedCooldownDays: 21 },
-  '케이크': { calories: 400, carbs: 50, protein: 5, fat: 20, sodium: 250, healthNote: '당류가 높아요. 가끔만!', suggestedCooldownDays: 14 },
-  '아이스크림': { calories: 250, carbs: 30, protein: 4, fat: 14, sodium: 100, healthNote: '당류와 포화지방에 주의하세요.', suggestedCooldownDays: 7 },
-  '콜라': { calories: 150, carbs: 39, protein: 0, fat: 0, sodium: 15, healthNote: '액상과당 덩어리예요. 물로 바꿔보는 건 어때요?', suggestedCooldownDays: 3 },
-  '커피': { calories: 50, carbs: 8, protein: 1, fat: 1, sodium: 40, healthNote: '카페인 과다는 수면에 영향을 줄 수 있어요.', suggestedCooldownDays: 1 },
-};
-function mockNutrition(name) {
-  const key = Object.keys(MOCK_DB).find((k) => norm(name).includes(norm(k)));
-  if (key) return MOCK_DB[key];
-  const seed = norm(name).length;
-  return {
-    calories: 350 + (seed % 5) * 60,
-    carbs: 40 + (seed % 4) * 8,
-    protein: 12 + (seed % 3) * 4,
-    fat: 12 + (seed % 4) * 5,
-    sodium: 700 + (seed % 6) * 120,
-    healthNote: '데모 추정치예요. 정확한 값은 AI 공급자를 연결하면 채워집니다.',
-    suggestedCooldownDays: defaultCooldown(),
-  };
-}
 
 /* =========================================================================
- *  사진 인식 — 공급자 무관 어댑터 (PROVIDERS/analyzeNutrition과 동형)
+ *  사진 인식 — 공급자 무관 어댑터 (recognizeMenu 하나로 설정된 인식기 호출)
  *  recognizeMenu(dataUrl) 하나만 호출하면 설정된 인식 공급자가 처리.
  *  - mock: 무료·로컬 데모
  *  - tesseract: 기기 내 OCR (메뉴판/영수증 글자). 키 불필요, 최초 로딩 수 MB
@@ -467,8 +328,10 @@ async function callAiWithFallback(body, isSuccess) {
       const { data, error } = await sb.functions.invoke(fn, { body: Object.assign({}, body, { model: models[i] }) });
       if (error) {
         lastErr = error.message || String(error);
+        const status = (error.context && error.context.status) || 0;
         try { const b = await error.context.json(); if (b && b.error) lastErr = b.error; } catch (_) {}
-        continue; // 다음 모델로
+        if (status === 400 || status === 401) break; // 모델 무관 오류(입력/인증) → 즉시 중단(불필요한 재시도·팝업 방지)
+        continue; // 5xx/429 등은 다음 모델로
       }
       if (data && data.error) { lastErr = data.error; continue; }
       if (isSuccess(data)) return data;
@@ -488,15 +351,6 @@ const RECOGNIZERS = {
       if (!currentUser) throw new Error('로그인하면 사진 자동 인식을 쓸 수 있어요.');
       const data = await callAiWithFallback({ image: dataUrl }, (d) => !!d); // 응답만 오면 성공(빈 후보는 '음식 없음')
       return normalizeRecognition({ name: data.name, candidates: data.candidates });
-    },
-  },
-
-  mock: {
-    label: '데모(무료·로컬)', needsKey: false,
-    async recognize() {
-      await sleep(500);
-      const keys = Object.keys(MOCK_DB);
-      return normalizeRecognition({ name: keys[0], candidates: keys.slice(0, 4), confidence: 0.5 });
     },
   },
 
@@ -588,7 +442,7 @@ const RECOGNIZERS = {
 };
 
 async function recognizeMenu(dataUrl) {
-  const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.mock;
+  const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.builtin;
   if (rec.needsKey && !llm.keys[llm.recognizer]) {
     throw new Error(`${rec.label} API 키가 설정되지 않았습니다. (관리 > 설정 > 사진 인식 공급자)`);
   }
@@ -640,7 +494,7 @@ function togglePreviewBanner(show) {
 function seedDemo() {
   const daysAgo = (n) => { const d = new Date(); d.setDate(d.getDate() - n); return ymd(d); };
   menus = [{ id: 'demo-0', name: '떡볶이', cooldownDays: 30, createdAt: 0 }];
-  records = [{ id: 'demo-r-0', menuId: 'demo-0', name: '떡볶이', date: daysAgo(5), note: '이건 예시 기록이에요. 로그인하면 내 기록으로 시작합니다.', nutrition: null, createdAt: 0 }];
+  records = [{ id: 'demo-r-0', menuId: 'demo-0', name: '떡볶이', date: daysAgo(5), note: '이건 예시 기록이에요. 로그인하면 내 기록으로 시작합니다.', createdAt: 0 }];
 }
 // 게스트 미리보기에서 항목 옆에 붙는 '예시' 배지
 function demoBadge() { return guestMode ? '<span class="badge-demo">예시</span>' : ''; }
@@ -664,6 +518,14 @@ function requireAuth(msg) {
   togglePreviewBanner(false);
   showAuthScreen('signup');
 }
+// 게스트면 안내 후 true 반환 — 쓰기 핸들러에서 `if (blockGuest(msg)) return;` 로 가드
+function blockGuest(msg) {
+  if (!guestMode) return false;
+  requireAuth(msg);
+  return true;
+}
+// 표준 실패 토스트 — '<액션> 실패: <사용자 친화 메시지>'
+function failToast(action, err) { toast(action + ' 실패: ' + authMsg(err)); }
 
 async function enterApp(session) {
   if (!session) return;
@@ -675,7 +537,7 @@ async function enterApp(session) {
   try {
     await store.loadAll();
   } catch (err) {
-    toast('데이터 로드 실패: ' + authMsg(err));
+    failToast('데이터 로드', err);
     return;
   }
   loadedForUser = currentUser.id;
@@ -864,7 +726,7 @@ async function maybeImportLegacy() {
     localStorage.removeItem(LS.legacyRecords);
     toast(`로컬 기록 ${oldRecords.length}건을 계정으로 가져왔어요! 📥`);
   } catch (err) {
-    toast('가져오기 실패: ' + authMsg(err));
+    failToast('가져오기', err);
   }
 }
 
@@ -882,7 +744,7 @@ async function importData(data) {
     let mid = or.menuId ? menuIdMap[or.menuId] : null;
     if (!mid && or.name) mid = (await store.upsertMenu(or.name, null)).id;
     if (!mid) continue;
-    rows.push({ menu_id: mid, eaten_on: or.date, note: or.note || null, nutrition: or.nutrition || null });
+    rows.push({ menu_id: mid, eaten_on: or.date, note: or.note || null });
   }
   if (rows.length) {
     const { error } = await sb.from('records').insert(rows);
@@ -896,7 +758,9 @@ async function importData(data) {
  *  인앱 '쿨타임 완료' 알림
  * ======================================================================= */
 function computeNewlyReady() {
-  const last = Number(localStorage.getItem(LS.lastSeen) || 0);
+  // 기준시각은 계정별로 분리 — 공유기기에서 A의 기준이 B에게 새어들어 '새로 완료' 오알림 나던 문제 방지
+  const key = LS.lastSeen + '.' + (currentUser ? currentUser.id : 'guest');
+  const last = Number(localStorage.getItem(key) || 0);
   const now = Date.now();
   newlyReady = new Set();
   if (last > 0) {
@@ -908,7 +772,7 @@ function computeNewlyReady() {
       }
     }
   }
-  localStorage.setItem(LS.lastSeen, String(now));
+  localStorage.setItem(key, String(now));
 }
 function notifyNewlyReady() {
   updateTabDot();
@@ -925,8 +789,6 @@ function updateTabDot() {
 /* =========================================================================
  *  렌더링 (v1과 동일 구조)
  * ======================================================================= */
-let lastNutrition = null;
-
 function renderRecordTab() {
   $('#menu-suggestions').innerHTML = menus.map((m) => `<option value="${escapeHtml(m.name)}">`).join('');
 
@@ -941,12 +803,10 @@ function renderRecordTab() {
     return;
   }
   list.innerHTML = recent.map((r) => {
-    const n = r.nutrition;
-    const nutri = n ? ` · ${n.calories}kcal` : '';
     return `<li class="record-item">
       <div class="ri-main">
         <div class="ri-name">${escapeHtml(r.name)}${demoBadge()}</div>
-        <div class="ri-meta">${r.date}${nutri}</div>
+        <div class="ri-meta">${r.date}</div>
         ${r.note ? `<div class="ri-note">${escapeHtml(r.note)}</div>` : ''}
       </div>
       <button class="icon-btn" data-del-record="${r.id}" title="삭제">✕</button>
@@ -1026,9 +886,9 @@ function renderManageTab() {
 
 function renderRecognizerConfig() {
   const p = llm.recognizer;
-  const rec = RECOGNIZERS[p] || RECOGNIZERS.mock;
+  const rec = RECOGNIZERS[p] || RECOGNIZERS.builtin;
   const box = $('#recognizer-config');
-  if (!rec.needsKey) { box.hidden = true; return; } // mock/tesseract는 키 불필요
+  if (!rec.needsKey) { box.hidden = true; return; } // builtin/tesseract는 키 불필요
   box.hidden = false;
   $('#set-recognizer-key').value = llm.keys[p] || '';
   $('#set-recognizer-model').value = llm.models[p] || '';
@@ -1068,7 +928,7 @@ function initRecordForm() {
 
   // AI 영양정보: 서버(관리자 키) Gemma로 메뉴명 → 한 문장, '메모' 칸만 채움
   $('#btn-ai').addEventListener('click', async () => {
-    if (guestMode) { requireAuth('로그인 후 이용이 가능합니다'); return; }
+    if (blockGuest('로그인 후 이용이 가능합니다')) return;
     const name = $('#f-name').value.trim();
     if (!name) { toast('먼저 메뉴 이름을 입력하세요.'); return; }
     const btn = $('#btn-ai');
@@ -1091,7 +951,7 @@ function initRecordForm() {
   // 저장 (클라우드)
   $('#record-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    if (guestMode) { requireAuth('가입하면 이 기록을 저장할 수 있어요'); return; }
+    if (blockGuest('가입하면 이 기록을 저장할 수 있어요')) return;
     const name = $('#f-name').value.trim();
     const date = $('#f-date').value || todayStr();
     const note = $('#f-note').value.trim();
@@ -1103,18 +963,16 @@ function initRecordForm() {
     try {
       const cooldownDays = cdRaw === '' ? null : Math.max(0, parseInt(cdRaw, 10) || 0);
       const menu = await store.upsertMenu(name, cooldownDays);
-      await store.addRecord({ menuId: menu.id, date, note, nutrition: lastNutrition });
+      await store.addRecord({ menuId: menu.id, date, note });
 
       e.target.reset();
       $('#f-date').value = todayStr();
       $('#f-cooldown').value = defaultCooldown();
-      hideNutrition();
       resetPhotoUI();
-      lastNutrition = null;
       renderAll();
       toast(`"${menu.name}" 기록 완료! ✅`);
     } catch (err) {
-      toast('저장 실패: ' + authMsg(err));
+      failToast('저장', err);
     } finally {
       submitBtn.disabled = false;
     }
@@ -1124,18 +982,18 @@ function initRecordForm() {
   $('#recent-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-record]')?.dataset.delRecord;
     if (!id) return;
-    if (guestMode) { requireAuth(); return; }
+    if (blockGuest()) return;
     try {
       await store.deleteRecord(id);
       renderAll();
     } catch (err) {
-      toast('삭제 실패: ' + authMsg(err));
+      failToast('삭제', err);
     }
   });
 
   // 📷 사진으로 기록
   $('#btn-photo').addEventListener('click', () => {
-    if (guestMode) { requireAuth('로그인 후 이용이 가능합니다'); return; }
+    if (blockGuest('로그인 후 이용이 가능합니다')) return;
     $('#photo-file').click();
   });
   $('#photo-file').addEventListener('change', async (e) => {
@@ -1157,7 +1015,7 @@ function initRecordForm() {
         return;
       }
       showPhotoPreview(dataUrl);
-      const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.mock;
+      const rec = RECOGNIZERS[llm.recognizer] || RECOGNIZERS.builtin;
       hint.textContent = `인식 중… (${rec.label})`;
       const r = await recognizeMenu(dataUrl); // 서버 AI 호출
       hint.textContent = '';
@@ -1222,32 +1080,18 @@ function handleRecognition(r) {
   }
 }
 
-function showNutrition(n) {
-  const box = $('#f-nutrition');
-  box.hidden = false;
-  box.innerHTML = `
-    <span class="chip">🔥 ${n.calories} kcal</span>
-    <span class="chip">탄수 ${n.carbs}g</span>
-    <span class="chip">단백 ${n.protein}g</span>
-    <span class="chip">지방 ${n.fat}g</span>
-    <span class="chip">나트륨 ${n.sodium}mg</span>
-    ${n.suggestedCooldownDays != null ? `<span class="chip">권장 간격 ${n.suggestedCooldownDays}일</span>` : ''}
-    ${n.healthNote ? `<div class="note">💬 ${escapeHtml(n.healthNote)}</div>` : ''}`;
-}
-function hideNutrition() { const box = $('#f-nutrition'); box.hidden = true; box.innerHTML = ''; }
-
 function initManage() {
   // 메뉴 쿨타임 인라인 수정
   $('#menu-list').addEventListener('change', async (e) => {
     const id = e.target.dataset.menuCd;
     if (!id) return;
-    if (guestMode) { requireAuth(); return; }
+    if (blockGuest()) return;
     const days = Math.max(0, parseInt(e.target.value, 10) || 0);
     try {
       await store.updateMenuCooldown(id, days);
       renderCooldownTab();
     } catch (err) {
-      toast('수정 실패: ' + authMsg(err));
+      failToast('수정', err);
     }
   });
 
@@ -1255,7 +1099,7 @@ function initManage() {
   $('#menu-list').addEventListener('click', async (e) => {
     const id = e.target.closest('[data-del-menu]')?.dataset.delMenu;
     if (!id) return;
-    if (guestMode) { requireAuth(); return; }
+    if (blockGuest()) return;
     const m = getMenu(id);
     const cnt = records.filter((r) => r.menuId === id).length;
     if (!confirm(`"${m?.name}" 메뉴와 관련 기록 ${cnt}개를 삭제할까요?`)) return;
@@ -1263,19 +1107,19 @@ function initManage() {
       await store.deleteMenu(id);
       renderAll();
     } catch (err) {
-      toast('삭제 실패: ' + authMsg(err));
+      failToast('삭제', err);
     }
   });
 
   // 기본 쿨타임 (계정 프로필에 저장)
   $('#set-default-cooldown').addEventListener('change', async (e) => {
-    if (guestMode) { requireAuth(); return; }
+    if (blockGuest()) return;
     const v = Math.max(0, parseInt(e.target.value, 10) || 0);
     try {
       await store.updateProfile({ default_cooldown_days: v });
       toast('기본 쿨타임을 저장했어요 ✅');
     } catch (err) {
-      toast('저장 실패: ' + authMsg(err));
+      failToast('저장', err);
     }
   });
 
@@ -1309,7 +1153,7 @@ function initManage() {
 
   // 데이터 가져오기 (계정으로 삽입)
   $('#import-file').addEventListener('change', (e) => {
-    if (guestMode) { requireAuth(); e.target.value = ''; return; }
+    if (blockGuest()) { e.target.value = ''; return; }
     const file = e.target.files[0];
     if (!file) return;
     const reader = new FileReader();
@@ -1319,7 +1163,7 @@ function initManage() {
         await importData(data);
         toast('가져오기 완료! 📥');
       } catch (err) {
-        toast('가져오기 실패: ' + authMsg(err));
+        failToast('가져오기', err);
       }
       e.target.value = '';
     };
@@ -1328,14 +1172,14 @@ function initManage() {
 
   // 전체 삭제 (계정 데이터)
   $('#btn-reset').addEventListener('click', async () => {
-    if (guestMode) { requireAuth(); return; }
+    if (blockGuest()) return;
     if (!confirm('모든 기록과 메뉴를 삭제할까요? 되돌릴 수 없습니다.')) return;
     try {
       await store.deleteAllData();
       renderAll();
       toast('전체 삭제 완료');
     } catch (err) {
-      toast('삭제 실패: ' + authMsg(err));
+      failToast('삭제', err);
     }
   });
 }

@@ -107,8 +107,8 @@ Deno.serve(async (req) => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return json({ error: '로그인이 필요합니다.' }, 401);
 
-    // 2) 입력 수신 (image: 사진 인식 / menu: 영양정보 / text: 연결 헬스체크)
-    const { image, text: textQuery, menu, model: reqModel } = await req.json().catch(() => ({}));
+    // 2) 입력 수신 (image: 사진 인식 / menu: 영양정보)
+    const { image, menu, model: reqModel } = await req.json().catch(() => ({}));
 
     const key = Deno.env.get('GEMINI_API_KEY');
     if (!key) return json({ error: '서버에 GEMINI_API_KEY가 설정되지 않았습니다.' }, 500);
@@ -120,15 +120,18 @@ Deno.serve(async (req) => {
     //   ※ gemma-* / gemini-2.0-* 에 이 필드를 보내면 400(요청 전체 거부)이므로 2.5에만 보낸다.
     const thinkOff = /^gemini-2\.5/.test(model) ? { thinkingConfig: { thinkingBudget: 0 } } : {};
 
-    const genText = (prompt: string, cfg: Record<string, unknown> = {}) =>
+    // 모든 Gemini/Gemma 호출의 단일 관문 — URL·헤더·thinkOff 병합을 한 곳에서 관리
+    const callGemini = (parts: unknown[], cfg: Record<string, unknown> = {}) =>
       fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { temperature: 0.3, maxOutputTokens: 1024, ...cfg, ...thinkOff },
+          contents: [{ parts }],
+          generationConfig: { ...cfg, ...thinkOff },
         }),
       });
+    const genText = (prompt: string, cfg: Record<string, unknown> = {}) =>
+      callGemini([{ text: prompt }], { temperature: 0.3, maxOutputTokens: 1024, ...cfg });
 
     // 2-a) 영양정보 모드: 메뉴명 → 한 문장(메모용)
     //   JSON 강제 출력(responseSchema)으로 Gemma의 영어 사고과정을 억제.
@@ -167,41 +170,14 @@ Deno.serve(async (req) => {
       return json({ note, model, raw: raw.slice(0, 400) }, 200);
     }
 
-    // 2-b) 텍스트 질의 모드: 모델 연결 점검용 (원문 그대로 반환)
-    if (!image && textQuery && typeof textQuery === 'string') {
-      const r = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: textQuery }] }],
-            generationConfig: { temperature: 0.2, maxOutputTokens: 512, ...thinkOff },
-          }),
-        },
-      );
-      if (!r.ok) return json({ error: `gemini ${r.status}`, detail: (await r.text()).slice(0, 300) }, 502);
-      const d = await r.json();
-      return json({ raw: d?.candidates?.[0]?.content?.parts?.[0]?.text ?? '' }, 200);
-    }
-
     if (!image || typeof image !== 'string') return json({ error: '이미지가 없습니다.' }, 400);
     const { mimeType, base64 } = splitDataUrl(image);
 
     const call = (generationConfig: Record<string, unknown>) =>
-      fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({
-          contents: [{
-            parts: [
-              { inline_data: { mime_type: mimeType, data: base64 } }, // 이미지를 먼저
-              { text: RECOGNIZE_SYS },
-            ],
-          }],
-          generationConfig: { ...generationConfig, ...thinkOff }, // gemini-2.5면 thinking off(후보 JSON 잘림 방지)
-        }),
-      });
+      callGemini([
+        { inline_data: { mime_type: mimeType, data: base64 } }, // 이미지를 먼저
+        { text: RECOGNIZE_SYS },
+      ], generationConfig); // callGemini가 thinkOff 병합(gemini-2.5 후보 JSON 잘림 방지)
 
     // JSON 강제 모드(camelCase) → 미지원(400)이면 일반 모드. 모델 폴백은 클라이언트가 처리하므로 여기선 빠르게 실패.
     let r = await call({ temperature: 0, maxOutputTokens: 1024, responseMimeType: 'application/json' });
