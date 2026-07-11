@@ -3,16 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-  <meta name="theme-color" content="#edece3" />
+  <meta name="theme-color" content="#F1F0EC" />
   <title>쿨타임 트래커 — 먹은 거 기록 & 쿨다운</title>
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" />
-  <link rel="stylesheet" href="styles.css?v=9" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css?v=13" />
 </head>
 <body>
   <div class="app">
     <header class="app-header">
+      <div class="eyebrow">SYS · COOLTIME V1.0</div>
       <h1>쿨타임 트래커</h1>
-      <p class="subtitle">먹거나 한 걸 기록하고, 다시 해도 되는 날까지 카운트다운</p>
+      <p class="subtitle">먹거나 한 걸 기록 / 다시 해도 되는 날까지 카운트다운</p>
     </header>
 
     <!-- ===================== 인증 화면 (로그아웃 상태) ===================== -->
@@ -102,13 +105,15 @@
     <!-- ===================== 앱 본체 (로그인 상태) ===================== -->
     <div id="app-view" hidden>
       <div id="preview-banner" hidden>
-        <span>데모 미리보기예요 — 로그인하면 내 기록을 남길 수 있어요.</span>
-        <button type="button" id="btn-preview-login">로그인 / 가입</button>
+        <span>DEMO MODE — 로그인 필요</span>
+        <button type="button" id="btn-preview-login">[ 로그인 ]</button>
       </div>
       <nav class="tabbar" id="tabbar">
-        <button class="tab active" data-tab="record">기록</button>
-        <button class="tab" data-tab="cooldown">쿨타임</button>
-        <button class="tab" data-tab="manage">관리</button>
+        <button class="tab active" data-tab="record">01 기록</button>
+        <span class="tab-sep" aria-hidden="true">—</span>
+        <button class="tab" data-tab="cooldown">02 쿨타임</button>
+        <span class="tab-sep" aria-hidden="true">—</span>
+        <button class="tab" data-tab="manage">03 관리</button>
       </nav>
 
       <main class="content">
@@ -118,14 +123,14 @@
             <h2 class="card-title">오늘 뭐 먹었어요?</h2>
 
             <label class="field">
-              <span class="field-label">메뉴 / 항목</span>
+              <span class="field-label">MENU / 항목</span>
               <input type="text" id="f-name" list="menu-suggestions" placeholder="예: 떡볶이" required />
               <datalist id="menu-suggestions"></datalist>
             </label>
 
             <div class="row">
               <label class="field">
-                <span class="field-label">날짜</span>
+                <span class="field-label">DATE</span>
                 <input type="date" id="f-date" required />
               </label>
               <label class="field">
@@ -135,12 +140,12 @@
             </div>
 
             <label class="field">
-              <span class="field-label">메모 / 부가설명</span>
+              <span class="field-label">MEMO / 부가설명</span>
               <textarea id="f-note" rows="2" placeholder="자유 메모 — 또는 아래 'AI 분석'으로 칼로리·영양정보 자동 채우기"></textarea>
             </label>
 
             <div class="ai-box">
-              <button type="button" class="btn btn-ghost" id="btn-ai">AI로 영양정보 채우기</button>
+              <button type="button" class="btn btn-ghost" id="btn-ai">[ AI 분석 ]</button>
               <span class="ai-hint" id="ai-hint"></span>
             </div>
 
@@ -160,8 +165,8 @@
 
           <div class="card">
             <div class="card-head">
-              <h2 class="card-title">최근 기록</h2>
-              <span class="muted" id="record-count"></span>
+              <h2 class="card-title label-title">RECENT</h2>
+              <span class="muted small" id="record-count"></span>
             </div>
             <ul class="record-list" id="recent-list"></ul>
           </div>
@@ -258,6 +263,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=4"></script>
-  <script src="app.js?v=18" defer></script>
+  <script src="app.js?v=19" defer></script>
 </body>
 </html>

@@ -496,8 +496,8 @@ function seedDemo() {
   menus = [{ id: 'demo-0', name: '떡볶이', cooldownDays: 30, createdAt: 0 }];
   records = [{ id: 'demo-r-0', menuId: 'demo-0', name: '떡볶이', date: daysAgo(5), note: '이건 예시 기록이에요. 로그인하면 내 기록으로 시작합니다.', createdAt: 0 }];
 }
-// 게스트 미리보기에서 항목 옆에 붙는 '예시' 배지
-function demoBadge() { return guestMode ? '<span class="badge-demo">예시</span>' : ''; }
+// 게스트 미리보기에서 항목 옆에 붙는 '[예시]' 태그
+function demoBadge() { return guestMode ? ' <span class="badge-demo">[예시]</span>' : ''; }
 
 function enterPreview() {
   guestMode = true;
@@ -802,8 +802,9 @@ function renderRecordTab() {
     list.innerHTML = `<li class="empty">아직 기록이 없어요. 위에서 첫 기록을 남겨보세요! 🍽️</li>`;
     return;
   }
-  list.innerHTML = recent.map((r) => {
+  list.innerHTML = recent.map((r, i) => {
     return `<li class="record-item">
+      <span class="ri-idx">R-${String(i + 1).padStart(2, '0')}</span>
       <div class="ri-main">
         <div class="ri-name">${escapeHtml(r.name)}${demoBadge()}</div>
         <div class="ri-meta">${r.date}</div>
@@ -820,9 +821,9 @@ function renderCooldownTab() {
   const waiting = statuses.filter((s) => !s.available).sort((a, b) => a.daysRemaining - b.daysRemaining);
 
   $('#summary').innerHTML = `
-    <div class="stat"><div class="num">${statuses.length}</div><div class="lbl">기록된 메뉴</div></div>
-    <div class="stat ok"><div class="num">${ready.length}</div><div class="lbl">지금 OK</div></div>
-    <div class="stat wait"><div class="num">${waiting.length}</div><div class="lbl">쿨타임 중</div></div>`;
+    <div class="stat">MENUS <b>${statuses.length}</b></div>
+    <div class="stat">OK <b>${ready.length}</b></div>
+    <div class="stat act">ACTIVE <b>${waiting.length}</b></div>`;
 
   const groups = $('#cooldown-groups');
   if (!statuses.length) {
@@ -843,18 +844,28 @@ function renderCooldownTab() {
 }
 
 function cdCard(s) {
-  const since = s.elapsed === 0 ? '오늘' : `${s.elapsed}일 전`;
+  // 원형 게이지: 경과율만큼 오렌지 호(stroke-dasharray), 12시 방향 시작(-90deg), 끝은 각지게(butt)
+  const C = 2 * Math.PI * 38; // r=38 원주 ≈ 238.8
+  const p = Math.max(0, Math.min(1, s.progress));
+  const dash = `${(p * C).toFixed(1)} ${(C - p * C).toFixed(1)}`;
   const isNew = newlyReady.has(s.menu.id);
-  const status = s.available
-    ? `<span class="cd-status ready">먹어도 OK</span>`
-    : `<span class="cd-status wait">${s.daysRemaining}일 남음</span>`;
-  const meta = s.available
-    ? `마지막: ${s.last.date} (${since}) · 쿨타임 ${s.menu.cooldownDays}일`
-    : `마지막: ${s.last.date} (${since}) · 다음 가능일 <b>${ymd(s.nextDate)}</b>`;
-  return `<div class="cd-card ${s.available ? 'ready' : ''}">
-    <div class="cd-top"><span class="cd-name">${escapeHtml(s.menu.name)}${demoBadge()}${isNew ? '<span class="badge-new">새로 완료</span>' : ''}</span>${status}</div>
-    <div class="cd-meta">${meta}</div>
-    <div class="bar"><span style="width:${Math.round(s.progress * 100)}%"></span></div>
+  const center = s.available
+    ? `<text x="46" y="42" text-anchor="middle" class="g-num" font-size="18">OK</text>
+       <text x="46" y="58" text-anchor="middle" class="g-sub">READY</text>`
+    : `<text x="46" y="42" text-anchor="middle" class="g-num">${s.daysRemaining}</text>
+       <text x="46" y="58" text-anchor="middle" class="g-sub">DAYS LEFT</text>`;
+  const aria = s.available ? `${s.menu.name} 쿨타임 완료` : `${s.menu.name} ${s.daysRemaining}일 남음`;
+  return `<div class="cd-card${s.available ? ' ready' : ''}">
+    <svg class="gauge" width="92" height="92" viewBox="0 0 92 92" role="img" aria-label="${escapeHtml(aria)}">
+      <circle cx="46" cy="46" r="38" fill="none" stroke="rgba(0,0,0,.12)" stroke-width="6"/>
+      <circle cx="46" cy="46" r="38" fill="none" stroke="#FF5A1F" stroke-width="6"
+        stroke-dasharray="${dash}" stroke-linecap="butt" transform="rotate(-90 46 46)"/>
+      ${center}
+    </svg>
+    <div class="cd-info">
+      <div class="cd-name">${escapeHtml(s.menu.name)}${demoBadge()}${isNew ? '<span class="badge-new">새로 완료</span>' : ''}</div>
+      <div class="cd-meta">LAST ${s.last.date} (D+${s.elapsed})<br>NEXT ${ymd(s.nextDate)}</div>
+    </div>
   </div>`;
 }
 
@@ -905,11 +916,13 @@ function renderAll() {
  *  이벤트 바인딩
  * ======================================================================= */
 function initTabs() {
+  document.body.dataset.tab = 'record'; // 헤더 부제 표시 여부는 CSS가 body[data-tab]로 판단
   $('#tabbar').addEventListener('click', (e) => {
     const btn = e.target.closest('.tab');
     if (!btn) return;
     $$('.tab').forEach((t) => t.classList.toggle('active', t === btn));
     const tab = btn.dataset.tab;
+    document.body.dataset.tab = tab;
     $$('.panel').forEach((p) => p.classList.toggle('active', p.id === `panel-${tab}`));
     if (tab === 'cooldown') btn.classList.remove('has-dot'); // 알림 점 해제 (배지는 유지)
   });
