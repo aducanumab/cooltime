@@ -221,7 +221,6 @@ button:focus-visible, .tab:focus-visible {
 }
 
 .form-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; }
-#record-form .form-actions { gap: 0; margin-bottom: 6px; } /* 버튼 플러시 배치 — 명세 */
 
 /* ---------- Buttons ---------- */
 .btn {
@@ -247,14 +246,32 @@ button:focus-visible, .tab:focus-visible {
   color: var(--ink);
   padding: 10px 14px;
 }
-#record-form .btn-soft { flex: 1; padding: 10px 0; }
-.btn-ghost {                       /* [ AI 분석 ] 트리거 */
+/* 상단 '사진으로 기록' — 폼의 첫 액션(다크 프라이머리, 풀폭) */
+.btn-photo-lead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  width: 100%;
+  background: var(--ink);
+  color: #F1F0EC;
+  padding: 12px 0;
+  font: 600 12px var(--mono);
+}
+.btn-photo-lead svg { display: block; }
+/* MEMO 아래 작은 AI 팁 (버튼 아님·힌트처럼) */
+.ai-tip {
+  align-self: flex-start;
   background: transparent;
   border: 0;
-  padding: 0;
-  font: 600 10.5px var(--mono);
+  border-bottom: 1px dotted var(--accent);
+  border-radius: 0;
+  padding: 0 0 1px;
+  font: 500 11px var(--mono);
   color: var(--accent);
+  cursor: pointer;
 }
+.ai-tip:disabled { opacity: .5; cursor: default; }
 .btn-danger {
   background: transparent;
   border: 1px solid var(--accent);
@@ -263,7 +280,8 @@ button:focus-visible, .tab:focus-visible {
 }
 
 /* ---------- AI / photo ---------- */
-.ai-box { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 2px; } /* form gap 16 + 2 = 명세 18px */
+.photo-lead { display: flex; flex-direction: column; gap: 8px; }
+.photo-lead-sub { font: 400 11px var(--mono); color: var(--muted); text-align: center; }
 .ai-hint { font: 400 10px var(--mono); color: var(--muted); }
 .photo-box {
   display: flex;

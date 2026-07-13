@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css?v=13" />
+  <link rel="stylesheet" href="styles.css?v=14" />
 </head>
 <body>
   <div class="app">
@@ -122,6 +122,22 @@
           <form class="card form" id="record-form" autocomplete="off">
             <h2 class="card-title">오늘 뭐 먹었어요?</h2>
 
+            <!-- 사진으로 시작: 먼저 사진 찍을 선택권을 줌 → 메뉴명 자동 채움.
+                 capture 속성 없음: iOS/안드로이드가 '카메라 촬영/사진첩 선택' 메뉴를 띄움 -->
+            <div class="photo-lead">
+              <button type="button" class="btn btn-photo-lead" id="btn-photo">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M4 8h3l1.6-2.2h6.8L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.1"/></svg>
+                사진으로 기록
+              </button>
+              <span class="photo-lead-sub">찍으면 메뉴가 자동으로 채워져요</span>
+              <input type="file" id="photo-file" accept="image/*" hidden />
+              <div class="photo-box" id="photo-box" hidden>
+                <img id="f-photo-preview" class="photo-preview" alt="촬영한 사진" hidden />
+                <span class="ai-hint" id="photo-hint"></span>
+                <div class="photo-cands" id="photo-candidates" hidden></div>
+              </div>
+            </div>
+
             <label class="field">
               <span class="field-label">MENU / 항목</span>
               <input type="text" id="f-name" list="menu-suggestions" placeholder="예: 떡볶이" required />
@@ -139,27 +155,15 @@
               </label>
             </div>
 
-            <label class="field">
-              <span class="field-label">MEMO / 부가설명</span>
-              <textarea id="f-note" rows="2" placeholder="자유 메모 — 또는 아래 'AI 분석'으로 칼로리·영양정보 자동 채우기"></textarea>
-            </label>
-
-            <div class="ai-box">
-              <button type="button" class="btn btn-ghost" id="btn-ai">[ AI 분석 ]</button>
+            <div class="field">
+              <label class="field-label" for="f-note">MEMO / 부가설명</label>
+              <button type="button" class="ai-tip" id="btn-ai">✦ AI로 MEMO 작성하기</button>
+              <textarea id="f-note" rows="2" placeholder="자유 메모 — 또는 위 'AI로 MEMO 작성하기'"></textarea>
               <span class="ai-hint" id="ai-hint"></span>
-            </div>
-
-            <!-- capture 속성 없음: iOS/안드로이드가 '카메라 촬영/사진첩 선택' 메뉴를 띄움 -->
-            <input type="file" id="photo-file" accept="image/*" hidden />
-            <div class="photo-box" id="photo-box" hidden>
-              <img id="f-photo-preview" class="photo-preview" alt="촬영한 사진" hidden />
-              <span class="ai-hint" id="photo-hint"></span>
-              <div class="photo-cands" id="photo-candidates" hidden></div>
             </div>
 
             <div class="form-actions">
               <button type="submit" class="btn btn-primary">기록 저장</button>
-              <button type="button" class="btn btn-soft" id="btn-photo">사진으로 기록</button>
             </div>
           </form>
 
@@ -263,6 +267,6 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="config.js?v=4"></script>
-  <script src="app.js?v=19" defer></script>
+  <script src="app.js?v=20" defer></script>
 </body>
 </html>

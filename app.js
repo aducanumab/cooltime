@@ -947,7 +947,7 @@ function initRecordForm() {
     const btn = $('#btn-ai');
     const hint = $('#ai-hint');
     btn.disabled = true;
-    hint.textContent = '영양정보 분석 중…';
+    hint.textContent = 'AI가 메모 작성 중…';
     try {
       const data = await callAiWithFallback({ menu: name }, (d) => !!(d && d.note));
       hint.textContent = '';
